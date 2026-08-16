@@ -1,6 +1,6 @@
 /**
  * Map canvas: Mapbox GL for the basemap and vector tiles, deck.gl on top for
- * photos and the heatmap.
+ * photo thumbnails.
  *
  * Tracks and places come from our own MVT endpoints, and every filterable
  * attribute (mode, source, commute flag, timestamps) travels as a FEATURE
@@ -11,7 +11,6 @@
  * No datum shift anywhere: stored data and the Mapbox basemap are both WGS-84.
  */
 
-import { HeatmapLayer } from '@deck.gl/aggregation-layers'
 import type { Layer } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { IconLayer } from '@deck.gl/layers'
@@ -21,17 +20,18 @@ import { useEffect, useMemo, useRef } from 'react'
 import { api } from '@/api/client'
 import { usePhotos } from '@/api/hooks'
 import type { Photo, SourceKind, TravelMode } from '@/api/types'
-import { t } from '@/i18n/zh'
 import { useAppStore } from '@/store/appStore'
 
+// The design system's transport palette. `run` moved off the danger colour in
+// design v2: a running track and a selected place used to render identically.
 const MODE_COLOR: Record<TravelMode, string> = {
-  walk: '#33a76b',
-  run: '#f28c26',
-  bike: '#409acf',
-  car: '#e55a5a',
-  transit: '#8c66d9',
-  flight: '#59bfd9',
-  unknown: '#8c8f96',
+  walk: '#8fb8dd',
+  run: '#d9663c',
+  bike: '#8f6fd1',
+  car: '#4fa08f',
+  transit: '#d9a13c',
+  flight: '#c05f9c',
+  unknown: '#98989b',
 }
 
 const TRACK_SOURCE = 'contrail-tracks'
@@ -96,7 +96,7 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
   // used directly as deck.gl icons.
   const photos = usePhotos(
     { from: timeFrom ?? undefined, to: timeTo ?? undefined, limit: 500 },
-    layers.photos || layers.heatmap,
+    layers.photos,
   )
 
   useEffect(() => {
@@ -269,33 +269,14 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
       )
     }
 
-    if (layers.heatmap && located.length) {
-      deckLayers.push(
-        new HeatmapLayer<Photo & { lat: number; lon: number }>({
-          id: 'contrail-heatmap',
-          data: located,
-          getPosition: (photo) => [photo.lon, photo.lat],
-          getWeight: () => 1,
-          radiusPixels: 42,
-          intensity: 1,
-          threshold: 0.05,
-        }),
-      )
-    }
-
+    // No heatmap layer: F-31 stays in P2 and the MVP does not render a control
+    // for it, so there is nothing here to switch on.
     overlay.current.setProps({ layers: deckLayers })
-  }, [layers.photos, layers.heatmap, located, onSelect])
+  }, [layers.photos, located, onSelect])
 
-  if (!mapboxToken) {
-    return (
-      <div className="map-empty">
-        <div>
-          <p>{t.connection.mapboxMissing}</p>
-          <p className="faint">VITE_MAPBOX_TOKEN</p>
-        </div>
-      </div>
-    )
-  }
+  // Without a token there is no basemap, but the user's own geometry is still
+  // real - the canvas keeps its place and the overlay explains the gap.
+  if (!mapboxToken) return <div className="map-canvas" ref={container} />
 
-  return <div className="map-canvas" ref={container} />
+  return <div className="map-canvas" ref={container} style={{ height: '100%' }} />
 }

@@ -1,11 +1,27 @@
+/**
+ * Map filter panel: search, time window, layers, transport modes, sources.
+ *
+ * Everything here writes to the store, and the map reads the store as Mapbox
+ * filter expressions - no filter in this panel issues a request.
+ *
+ * Two rules the copy has to hold to:
+ *   * the fence card says "applied on export". The in-app map deliberately
+ *     shows real data (02 section 2); claiming otherwise would be a lie the
+ *     user might rely on.
+ *   * a mode whose distance is partly unknown is marked, never rounded down
+ *     into a total that looks measured.
+ */
+
+import { Lock, Search } from 'lucide-react'
 import { useState } from 'react'
 
-import { useGeofences, useGroups, useSearch, useTags } from '@/api/hooks'
+import { useGeofences, useSearch, useStats } from '@/api/hooks'
 import type { SourceKind, TravelMode } from '@/api/types'
-import { t } from '@/i18n/zh'
+import Blueprint from '@/components/Blueprint'
+import { useCopy } from '@/i18n'
 import { ALL_MODES, ALL_SOURCES, useAppStore } from '@/store/appStore'
 
-const MODE_COLOR: Record<TravelMode, string> = {
+const MODE_VARS: Record<TravelMode, string> = {
   walk: 'var(--mode-walk)',
   run: 'var(--mode-run)',
   bike: 'var(--mode-bike)',
@@ -15,198 +31,253 @@ const MODE_COLOR: Record<TravelMode, string> = {
   unknown: 'var(--mode-unknown)',
 }
 
-const MODE_GLYPH: Record<TravelMode, string> = {
-  walk: '🚶',
-  run: '🏃',
-  bike: '🚴',
-  car: '🚗',
-  transit: '🚆',
-  flight: '✈️',
-  unknown: '❓',
+function startOfYear(): string {
+  return new Date(Date.UTC(new Date().getUTCFullYear(), 0, 1)).toISOString()
 }
 
-function thisYearRange(): [string, string] {
-  const year = new Date().getUTCFullYear()
-  return [`${year}-01-01T00:00:00Z`, `${year}-12-31T23:59:59Z`]
+function monthsAgo(months: number): string {
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1)).toISOString()
+}
+
+function km(meters: number): string {
+  return meters >= 1000 ? `${Math.round(meters / 1000).toLocaleString()} km` : `${Math.round(meters)} m`
 }
 
 export default function FilterPanel() {
-  const store = useAppStore()
-  const groups = useGroups()
-  const tags = useTags()
-  const fences = useGeofences()
-  const [term, setTerm] = useState('')
-  const search = useSearch(term)
+  const t = useCopy()
+  const [customOpen, setCustomOpen] = useState(false)
 
-  const preset = store.timeFrom === null ? 'all' : 'custom'
+  const timeFrom = useAppStore((state) => state.timeFrom)
+  const timeTo = useAppStore((state) => state.timeTo)
+  const setTimeRange = useAppStore((state) => state.setTimeRange)
+  const layers = useAppStore((state) => state.layers)
+  const toggleLayer = useAppStore((state) => state.toggleLayer)
+  const modes = useAppStore((state) => state.modes)
+  const toggleMode = useAppStore((state) => state.toggleMode)
+  const sources = useAppStore((state) => state.sources)
+  const toggleSource = useAppStore((state) => state.toggleSource)
+  const searchTerm = useAppStore((state) => state.searchTerm)
+  const setSearchTerm = useAppStore((state) => state.setSearchTerm)
+  const select = useAppStore((state) => state.select)
+  const navigate = useAppStore((state) => state.navigate)
+  const setSettingsOpen = useAppStore((state) => state.setSettingsOpen)
+
+  const windowStats = useStats({ from: timeFrom ?? undefined, to: timeTo ?? undefined })
+  const fences = useGeofences()
+  const results = useSearch(searchTerm)
+
+  const byMode = new Map((windowStats.data?.distance_by_mode ?? []).map((row) => [row.mode, row]))
+  const tracksInWindow = (windowStats.data?.distance_by_mode ?? []).reduce(
+    (sum, row) => sum + row.segments,
+    0,
+  )
+  const isAll = !timeFrom && !timeTo
+  const enabledFences = (fences.data ?? []).filter((fence) => fence.enabled).length
 
   return (
-    <div>
-      <div className="section">
-        <input
-          value={term}
-          onChange={(event) => setTerm(event.target.value)}
-          placeholder={t.filters.search}
+    <>
+      <div className="map__search">
+        <Search
+          size={15}
+          strokeWidth={1.5}
+          style={{ position: 'absolute', left: 22, top: 21, opacity: 0.5 }}
         />
-        {search.data && term.trim() !== '' && (
-          <div className="stack" style={{ marginTop: 8 }}>
-            {search.data.trips.slice(0, 5).map((trip) => (
-              <button
-                key={trip.id}
-                className="ghost"
-                style={{ textAlign: 'left' }}
-                onClick={() => store.navigate({ name: 'trip', id: trip.id })}
-              >
-                🧳 {trip.title}
-              </button>
-            ))}
-            {search.data.places.slice(0, 5).map((place) => (
+        <input
+          className="input"
+          style={{ paddingLeft: 28 }}
+          placeholder={t.filters.search}
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+        />
+        {searchTerm.trim().length > 0 && (
+          <div className="search-results">
+            {results.data?.places.length === 0 && results.data.trips.length === 0 && (
+              <div className="search-results__item muted">{t.map.searchEmpty}</div>
+            )}
+            {(results.data?.places ?? []).length > 0 && (
+              <div className="kicker" style={{ padding: '6px 10px' }}>
+                {t.map.searchPlaces}
+              </div>
+            )}
+            {(results.data?.places ?? []).slice(0, 8).map((place) => (
               <button
                 key={place.id}
-                className="ghost"
-                style={{ textAlign: 'left' }}
-                onClick={() => store.select({ kind: 'place', id: place.id })}
+                className="search-results__item"
+                onClick={() => {
+                  select({ kind: 'place', id: place.id })
+                  setSearchTerm('')
+                }}
               >
-                📍 {place.label ?? place.city ?? t.app.unknown}
+                {place.label ?? t.overview.unnamed}
+                <span className="faint"> · {place.city ?? place.country ?? ''}</span>
               </button>
             ))}
-            {!search.data.trips.length && !search.data.places.length && (
-              <span className="faint">{t.app.empty}</span>
+            {(results.data?.trips ?? []).length > 0 && (
+              <div className="kicker" style={{ padding: '6px 10px' }}>
+                {t.map.searchTrips}
+              </div>
             )}
+            {(results.data?.trips ?? []).slice(0, 8).map((trip) => (
+              <button
+                key={trip.id}
+                className="search-results__item"
+                onClick={() => {
+                  navigate({ name: 'trip', id: trip.id })
+                  setSearchTerm('')
+                }}
+              >
+                {trip.title}
+                <span className="faint"> · {trip.local_date}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>
 
-      <div className="section">
-        <div className="section__title">{t.filters.time}</div>
-        <div className="row row--wrap">
-          <button
-            className={preset === 'all' ? 'primary' : ''}
-            onClick={() => store.setTimeRange(null, null)}
-          >
+      <div className="map__filters-body">
+        <div className="kicker" style={{ padding: '14px 0 10px' }}>
+          {t.filters.time}
+        </div>
+        <div className="seg seg--block">
+          <label className="seg-opt">
+            <input type="radio" name="tp" checked={isAll} onChange={() => setTimeRange(null, null)} />
             {t.filters.timeAll}
-          </button>
-          <button onClick={() => store.setTimeRange(...thisYearRange())}>
+          </label>
+          <label className="seg-opt">
+            <input
+              type="radio"
+              name="tp"
+              checked={timeFrom === startOfYear() && !timeTo}
+              onChange={() => setTimeRange(startOfYear(), null)}
+            />
             {t.filters.timeThisYear}
-          </button>
+          </label>
+          <label className="seg-opt">
+            <input
+              type="radio"
+              name="tp"
+              checked={timeFrom === monthsAgo(6) && !timeTo}
+              onChange={() => setTimeRange(monthsAgo(6), null)}
+            />
+            {t.filters.timeLast6m}
+          </label>
         </div>
-        <div className="grid-2" style={{ marginTop: 8 }}>
-          <input
-            type="date"
-            value={store.timeFrom ? store.timeFrom.slice(0, 10) : ''}
-            onChange={(event) =>
-              store.setTimeRange(
-                event.target.value ? `${event.target.value}T00:00:00Z` : null,
-                store.timeTo,
-              )
-            }
-          />
-          <input
-            type="date"
-            value={store.timeTo ? store.timeTo.slice(0, 10) : ''}
-            onChange={(event) =>
-              store.setTimeRange(
-                store.timeFrom,
-                event.target.value ? `${event.target.value}T23:59:59Z` : null,
-              )
-            }
-          />
-        </div>
-      </div>
 
-      <div className="section">
-        <div className="section__title">{t.filters.layers}</div>
+        {/* The third granularity from 02 section 7: an exact range, typed. The
+            segments and the histogram cover exploring; this covers "May 2024". */}
+        {customOpen ? (
+          <div className="row" style={{ marginTop: 8, gap: 6 }}>
+            <input
+              className="input"
+              type="date"
+              value={timeFrom ? timeFrom.slice(0, 10) : ''}
+              onChange={(event) =>
+                setTimeRange(event.target.value ? `${event.target.value}T00:00:00Z` : null, timeTo)
+              }
+            />
+            <input
+              className="input"
+              type="date"
+              value={timeTo ? timeTo.slice(0, 10) : ''}
+              onChange={(event) =>
+                setTimeRange(timeFrom, event.target.value ? `${event.target.value}T23:59:59Z` : null)
+              }
+            />
+          </div>
+        ) : (
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ marginTop: 8 }}
+            onClick={() => setCustomOpen(true)}
+          >
+            <span className="num">
+              {timeFrom ? timeFrom.slice(0, 10) : t.filters.timeAll} —{' '}
+              {timeTo ? timeTo.slice(0, 10) : t.filters.timeAll}
+            </span>
+          </button>
+        )}
+
+        <div className="kicker" style={{ padding: '18px 0 10px' }}>
+          {t.filters.layers}
+        </div>
         {(
           [
-            ['tracks', t.filters.layerTracks],
-            ['places', t.filters.layerPlaces],
-            ['photos', t.filters.layerPhotos],
-            ['heatmap', t.filters.layerHeatmap],
+            ['tracks', t.layers.tracks, tracksInWindow],
+            ['places', t.layers.places, windowStats.data?.place_count ?? 0],
+            ['photos', t.layers.photos, windowStats.data?.photos.total ?? 0],
           ] as const
-        ).map(([key, label]) => (
-          <label className="check" key={key}>
-            <input
-              type="checkbox"
-              checked={store.layers[key]}
-              onChange={() => store.toggleLayer(key)}
-            />
-            {label}
+        ).map(([key, label, count]) => (
+          <label key={key} className="check">
+            <input type="checkbox" checked={layers[key]} onChange={() => toggleLayer(key)} />
+            <span>{label}</span>
+            <span className="num faint" style={{ marginLeft: 'auto', fontSize: 11 }}>
+              {count.toLocaleString()}
+            </span>
           </label>
         ))}
-      </div>
 
-      <div className="section">
-        <div className="section__title">{t.filters.modes}</div>
-        {ALL_MODES.map((mode) => (
-          <label className="check" key={mode}>
-            <input
-              type="checkbox"
-              checked={store.modes.has(mode)}
-              onChange={() => store.toggleMode(mode)}
-            />
-            <span className="swatch" style={{ background: MODE_COLOR[mode] }} />
-            <span aria-hidden>{MODE_GLYPH[mode]}</span>
-            {t.modes[mode]}
-          </label>
-        ))}
-      </div>
-
-      <div className="section">
-        <div className="section__title">{t.filters.sources}</div>
-        {ALL_SOURCES.map((source: SourceKind) => (
-          <label className="check" key={source}>
-            <input
-              type="checkbox"
-              checked={store.sources.has(source)}
-              onChange={() => store.toggleSource(source)}
-            />
-            {t.sourceKinds[source]}
-          </label>
-        ))}
-      </div>
-
-      <div className="section">
-        <div className="section__title">{t.filters.groups}</div>
-        <select
-          value={store.groupFilter ?? ''}
-          onChange={(event) => store.setGroupFilter(event.target.value || null)}
-        >
-          <option value="">{t.filters.timeAll}</option>
-          {(groups.data ?? []).map((group) => (
-            <option key={group.id} value={group.id}>
-              {group.name} ({group.trip_count})
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="section">
-        <div className="section__title">{t.filters.tags}</div>
-        <select
-          value={store.tagFilter ?? ''}
-          onChange={(event) => store.setTagFilter(event.target.value || null)}
-        >
-          <option value="">{t.filters.timeAll}</option>
-          {(tags.data ?? []).map((tag) => (
-            <option key={tag.id} value={tag.id}>
-              {tag.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="section">
-        <div className="pill">
-          🔒{' '}
-          {fences.data && fences.data.length
-            ? t.filters.fenceNotice(fences.data.filter((f) => f.enabled).length)
-            : t.filters.fenceNone}
+        <div className="kicker" style={{ padding: '18px 0 10px' }}>
+          {t.filters.modes}
         </div>
-      </div>
+        {ALL_MODES.filter((mode) => mode !== 'unknown').map((mode) => {
+          const row = byMode.get(mode)
+          const unknown = row?.unknown_distance_segments ?? 0
+          return (
+            <label key={mode} className="check">
+              <input
+                type="checkbox"
+                checked={modes.has(mode)}
+                onChange={() => toggleMode(mode)}
+              />
+              <svg width="20" height="8" style={{ flex: 'none' }}>
+                <line x1="0" y1="4" x2="20" y2="4" stroke={MODE_VARS[mode]} strokeWidth="2.5" />
+              </svg>
+              <span>{t.modes[mode]}</span>
+              <span className="num faint" style={{ marginLeft: 'auto', fontSize: 11 }}>
+                {row && row.distance_m > 0 ? km(row.distance_m) : t.app.dash}
+                {/* Segments with no distance are flagged, never folded in as 0. */}
+                {unknown > 0 && <sup title={t.detail.distanceUnknown}> +{unknown}</sup>}
+              </span>
+            </label>
+          )
+        })}
 
-      <button className="ghost" onClick={store.resetFilters}>
-        {t.filters.reset}
-      </button>
-    </div>
+        <div className="kicker" style={{ padding: '18px 0 10px' }}>
+          {t.filters.sources}
+        </div>
+        {(['photo', 'google_timeline', 'gpx', 'manual'] as SourceKind[]).map((source) => (
+          <label key={source} className="check">
+            <input
+              type="checkbox"
+              checked={sources.has(source)}
+              onChange={() => toggleSource(source)}
+            />
+            <span>{t.sourceKinds[source]}</span>
+          </label>
+        ))}
+
+        <Blueprint style={{ marginTop: 20, padding: '10px 11px' }}>
+          <div className="row" style={{ gap: 7, fontSize: 12 }}>
+            <Lock size={13} strokeWidth={1.5} />
+            <span style={{ fontFamily: 'var(--font-heading)', letterSpacing: '.06em' }}>
+              {t.map.fenceTitle}
+            </span>
+          </div>
+          <div className="muted" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 4 }}>
+            {t.map.fenceSide(enabledFences)}
+          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ alignSelf: 'flex-start', marginTop: 4 }}
+            onClick={() => setSettingsOpen(true)}
+          >
+            {t.app.manage} →
+          </button>
+        </Blueprint>
+      </div>
+    </>
   )
 }
+
+export { ALL_SOURCES }
