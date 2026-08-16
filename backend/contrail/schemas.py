@@ -45,6 +45,35 @@ class PrescanRequest(BaseModel):
     model_config = Strict
     pick_token: str | None = None
     upload_id: str | None = None
+    # Re-scanning the same token with a different recursion setting is how the
+    # wizard's "include subfolders" checkbox stays truthful about the counts.
+    include_subdirs: bool = True
+
+
+class DateRange(BaseModel):
+    model_config = Strict
+    # Local dates, as the user typed them; the importer resolves them against
+    # each record's own zone rather than a server default.
+    start: date | None = None
+    end: date | None = None
+
+
+class ImportOptions(BaseModel):
+    """Per-import choices from step 3 of the wizard.
+
+    Deliberately has no path field of any kind: `reject_path_fields()` walks the
+    whole body, and `extra="forbid"` makes a stray one a 422 rather than a
+    silently ignored extra.
+    """
+
+    model_config = Strict
+    include_subdirs: bool = True
+    infer_missing_gps: bool = True
+    # None means "use the user's stored photo_infer_tolerance_s".
+    infer_tolerance_s: int | None = Field(default=None, ge=300, le=10800)
+    generate_thumbnails: bool = True
+    skip_duplicates: bool = True
+    date_range: DateRange | None = None
 
 
 class ImportRequest(BaseModel):
@@ -54,6 +83,20 @@ class ImportRequest(BaseModel):
     kind: Literal["photo", "file"] = "photo"
     group_id: UUID | None = None
     tag_ids: list[UUID] = Field(default_factory=list)
+    options: ImportOptions = Field(default_factory=ImportOptions)
+
+
+class TaskStage(BaseModel):
+    """One phase of an import, reported alongside the others.
+
+    The wizard shows three bars at once (EXIF / thumbnails / clustering), so a
+    single current-stage field is not enough. `total` stays None while the total
+    is genuinely unknown - a percentage would have to be invented.
+    """
+
+    key: str
+    processed: int = 0
+    total: int | None = None
 
 
 class TaskResponse(BaseModel):
@@ -64,6 +107,8 @@ class TaskResponse(BaseModel):
     stage: str | None = None
     processed: int = 0
     total: int | None = None
+    stages: list[TaskStage] = Field(default_factory=list)
+    eta_seconds: int | None = None
     result: dict = Field(default_factory=dict)
     error: dict | None = None
     created_at: str | None = None
@@ -173,6 +218,10 @@ class AnchorOut(BaseModel):
     last_visit_utc: datetime | None
     geo_name: str | None
     geo_city: str | None
+    geo_country: str | None = None
+    # How many trips visited this anchor. The overview's place dimension ranks
+    # on visit_count and shows this next to it.
+    trip_count: int = 0
     hour_histogram: list[int] = Field(default_factory=list)
 
 
@@ -189,6 +238,10 @@ class GroupOut(BaseModel):
     kind: str
     color: str | None
     trip_count: int = 0
+    # Counted with the same inheritance rule the members list uses: a place with
+    # no group of its own belongs to its trip's group. Two different rules would
+    # put a number on screen that the list below it contradicts.
+    place_count: int = 0
 
 
 class TagIn(BaseModel):
@@ -201,6 +254,8 @@ class TagOut(BaseModel):
     id: UUID
     name: str
     color: str | None
+    trip_count: int = 0
+    place_count: int = 0
 
 
 class BulkAssign(BaseModel):
@@ -239,6 +294,12 @@ class SettingsIn(BaseModel):
     default_tz: str | None = None
     geocoding_enabled: bool | None = None
     photo_infer_tolerance_s: int | None = Field(default=None, ge=300, le=10800)
+    # How many times an origin-destination pair must repeat before it counts as
+    # a commute. Was a module constant in pipeline/commute.py; the commute page
+    # offers "wrong call? adjust the parameters", which needs it tunable.
+    commute_min_repeats: int | None = Field(default=None, ge=3, le=60)
+    # Display only: timestamps are stored as UTC plus a zone name, always.
+    display_local_time: bool | None = None
 
 
 class GeofenceIn(BaseModel):
@@ -286,6 +347,17 @@ class FenceCheckResponse(BaseModel):
     affected_tracks: int = 0
 
 
+class ExportContents(BaseModel):
+    """Which layers the image carries. Everything on except place labels."""
+
+    model_config = Strict
+    tracks: bool = True
+    places: bool = True
+    photos: bool = True
+    labels: bool = False
+    stats: bool = True
+
+
 class ExportRequest(BaseModel):
     model_config = Strict
     trip_ids: list[UUID] = Field(default_factory=list)
@@ -294,6 +366,43 @@ class ExportRequest(BaseModel):
     width: int = Field(default=1080, ge=200, le=6000)
     height: int = Field(default=1920, ge=200, le=6000)
     theme: Literal["light", "dark"] = "light"
+    # 'none' renders on transparency and draws no basemap credit - there is no
+    # basemap to credit. Every other value keeps the credit, always.
+    basemap: Literal["light", "dark", "terrain", "none"] = "light"
+    contents: ExportContents = Field(default_factory=ExportContents)
+    # Snaps every coordinate to a city-scale grid. Grid snapping, never noise:
+    # noise averages out across several exports of the same trip.
+    coarsen_to_city: bool = False
+    title: str | None = Field(default=None, max_length=120)
+    subtitle: str | None = Field(default=None, max_length=160)
     # Required whenever the scope intersects a fence. Missing -> 422, refused
     # server-side. A frontend dialog can be bypassed; this cannot.
-    fence_actions: Literal["blur", "remove"] | None = None
+    #
+    # The dict form is per fence: {fence_id: action}. A fence that is hit but
+    # absent from the dict is also a 422 - defaulting it to 'blur' would decide
+    # a privacy question on the user's behalf.
+    fence_actions: Literal["blur", "remove"] | dict[UUID, Literal["blur", "remove"]] | None = None
+
+
+# ── overview ──────────────────────────────────────────────
+class OverviewRow(BaseModel):
+    """One country or city in the overview.
+
+    `key` is None for the "no place name" row: places whose reverse geocoding
+    never ran, or produced nothing. They are reported rather than dropped -
+    dropping them makes the rows stop adding up to the totals in the header.
+
+    `distance_m` sums the trips attributed to this row. A trip that crossed a
+    border is counted once per country, so the rows deliberately add up to MORE
+    than the overall total; the page says so.
+    """
+
+    key: str | None
+    label: str | None
+    country: str | None = None
+    city_count: int = 0
+    trip_count: int = 0
+    photo_count: int = 0
+    distance_m: float = 0
+    first_day: date | None = None
+    last_day: date | None = None

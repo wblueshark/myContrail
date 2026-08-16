@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from contrail.config import get_settings
 from contrail.db import get_session
 from contrail.models import AppUser, Geofence
+from contrail.pipeline import commute as commute_lib
 from contrail.pipeline import refresh
 from contrail.pipeline.derive import rederive_window
 from contrail.schemas import GeofenceIn, GeofenceOut, SettingsIn
@@ -26,6 +27,8 @@ TUNABLES = (
     "accuracy_max_m",
     "photo_infer_tolerance_s",
     "geocoding_enabled",
+    "commute_min_repeats",
+    "display_local_time",
 )
 
 
@@ -46,6 +49,11 @@ async def read_settings(
             "photo_infer_tolerance_s", defaults.photo_infer_tolerance_s
         ),
         "geocoding_enabled": stored.get("geocoding_enabled", defaults.geocoding_enabled),
+        "commute_min_repeats": stored.get("commute_min_repeats", commute_lib.MIN_OCCURRENCE),
+        "display_local_time": stored.get("display_local_time", True),
+        # The token itself never crosses this boundary in either direction: it
+        # lives in .env, and SettingsIn forbids extra fields, so posting one is
+        # a 422 rather than a secret quietly landing in the database.
         "mapbox_token_configured": bool(defaults.mapbox_token),
         # Scenario presets from the design; the UI offers these as one click.
         "presets": {

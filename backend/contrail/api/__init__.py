@@ -8,6 +8,7 @@ from contrail.api import (
     exports,
     imports,
     organize,
+    overview,
     query,
     settings,
     system,
@@ -18,6 +19,7 @@ api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(system.router)
 api_router.include_router(imports.router)
 api_router.include_router(query.router)
+api_router.include_router(overview.router)
 api_router.include_router(tiles.router)
 api_router.include_router(organize.router)
 api_router.include_router(commute.router)

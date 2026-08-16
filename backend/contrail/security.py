@@ -129,24 +129,35 @@ class LocalGuardMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def reject_path_fields(payload: dict | None) -> None:
+PATH_FIELDS = ("path", "directory", "root", "scan_path", "abs_path")
+
+
+def reject_path_fields(payload: object | None) -> None:
     """API contract: /sources/prescan and /imports accept a pick_token ONLY.
 
     A request carrying a path field is rejected with 400 rather than sanitised.
     There is nothing to sanitise - the field must not exist, because a field
     that does not exist cannot be poisoned.
+
+    The walk is recursive: `/imports` now nests an `options` object, and a check
+    that only looked at the top level would leave exactly one place to hide a
+    path in.
     """
-    if not payload:
-        return
-    for field in ("path", "directory", "root", "scan_path", "abs_path"):
-        if field in payload:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "filesystem paths are not accepted over HTTP; "
-                    "use POST /fs/pick to obtain a pick_token"
-                ),
-            )
+    if isinstance(payload, dict):
+        for field in PATH_FIELDS:
+            if field in payload:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "filesystem paths are not accepted over HTTP; "
+                        "use POST /fs/pick to obtain a pick_token"
+                    ),
+                )
+        for value in payload.values():
+            reject_path_fields(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            reject_path_fields(value)
 
 
 async def current_user_id(request: Request) -> uuid.UUID:

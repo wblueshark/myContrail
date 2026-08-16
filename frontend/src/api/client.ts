@@ -15,6 +15,8 @@ import type {
   Anchor,
   AppSettings,
   Capabilities,
+  ImportOptions,
+  OverviewRow,
   CommuteOD,
   CommuteTrip,
   ExportRequest,
@@ -129,6 +131,10 @@ export interface TripQuery {
   tag?: string
   commute?: string
   q?: string
+  /** Overview drill-down: the trip has at least one place there. */
+  country?: string
+  city?: string
+  anchor?: string
   limit?: number
 }
 
@@ -140,7 +146,7 @@ export const api = {
   /** Opens the host's native folder chooser. 204 means the user cancelled. */
   pickDirectory: () => post<PickResponse | undefined>('/fs/pick'),
   /** Only a pick_token or an upload_id. A path field is a 400 by contract. */
-  prescan: (body: { pick_token?: string; upload_id?: string }) =>
+  prescan: (body: { pick_token?: string; upload_id?: string; include_subdirs?: boolean }) =>
     post<Prescan>('/sources/prescan', body),
   upload: async (file: File) => {
     const form = new FormData()
@@ -160,6 +166,7 @@ export const api = {
     kind: 'photo' | 'file'
     group_id?: string | null
     tag_ids?: string[]
+    options?: ImportOptions
   }) => post<TaskState>('/imports', body),
   listImports: () => get<TaskState[]>('/imports'),
   getImport: (id: string) => get<TaskState>(`/imports/${id}`),
@@ -176,7 +183,17 @@ export const api = {
   places: (params?: Record<string, unknown>) => get<Place[]>('/places', params),
   tracks: (params?: Record<string, unknown>) => get<Track[]>('/tracks', params),
   photos: (params?: Record<string, unknown>) => get<Photo[]>('/photos', params),
-  anchors: (params?: { kind?: string }) => get<Anchor[]>('/anchors', params),
+  anchors: (params?: {
+    kind?: string
+    country?: string
+    city?: string
+    sort?: 'visits' | 'duration'
+    limit?: number
+  }) => get<Anchor[]>('/anchors', params),
+
+  // ── overview ────────────────────────────────────────────
+  overviewCountries: () => get<OverviewRow[]>('/overview/countries'),
+  overviewCities: (params?: { country?: string }) => get<OverviewRow[]>('/overview/cities', params),
   search: (q: string) => get<SearchResults>('/search', { q }),
   stats: (params?: { from?: string; to?: string; group?: string }) => get<Stats>('/stats', params),
 
@@ -205,6 +222,14 @@ export const api = {
     add_tags?: string[]
     remove_tags?: string[]
   }) => post<{ updated: number }>('/trips/bulk-assign', body),
+  bulkAssignPlaces: (body: {
+    place_ids: string[]
+    group_id?: string | null
+    add_tags?: string[]
+    remove_tags?: string[]
+  }) => post<{ updated: number }>('/places/bulk-assign', body),
+  updateTag: (id: string, body: { name: string; color?: string | null }) =>
+    patch<Tag>(`/tags/${id}`, body),
 
   // ── commute ─────────────────────────────────────────────
   commuteOds: () => get<CommuteOD[]>('/commute/ods'),

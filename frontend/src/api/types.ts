@@ -126,6 +126,8 @@ export interface Anchor {
   last_visit_utc: string | null
   geo_name: string | null
   geo_city: string | null
+  geo_country: string | null
+  trip_count: number
   hour_histogram: number[]
 }
 
@@ -135,12 +137,16 @@ export interface Group {
   kind: 'user' | 'system_commute'
   color: string | null
   trip_count: number
+  /** Counted with the inheritance rule: a place with no group takes its trip's. */
+  place_count: number
 }
 
 export interface Tag {
   id: string
   name: string
   color: string | null
+  trip_count: number
+  place_count: number
 }
 
 export interface SourceFile {
@@ -155,6 +161,12 @@ export interface SourceFile {
   has_original: boolean
 }
 
+export interface TaskStage {
+  key: string
+  processed: number
+  total: number | null
+}
+
 export interface TaskState {
   id: string
   kind: string
@@ -164,6 +176,9 @@ export interface TaskState {
   /** Absolute count. Total is unknown while streaming, so no fake percentage. */
   processed: number
   total: number | null
+  /** One entry per phase: the wizard draws three bars at once. */
+  stages: TaskStage[]
+  eta_seconds: number | null
   result: ImportReport | Record<string, never>
   error: { type: string; message: string } | null
   created_at?: string
@@ -185,6 +200,26 @@ export interface ImportReport {
   tracks?: number
   time_span?: { start: string | null; end: string | null }
   already_imported?: boolean
+  /** Days spanning more than one zone. The trip was NOT split at the border. */
+  tz_crossings?: number
+  commute?: {
+    detected: boolean
+    reason: string | null
+    workdays?: number
+    required_workdays?: number
+    ods?: number
+  }
+  updated_trip_ids?: string[]
+  updated_trip_ids_truncated?: boolean
+}
+
+export interface ImportOptions {
+  include_subdirs?: boolean
+  infer_missing_gps?: boolean
+  infer_tolerance_s?: number | null
+  generate_thumbnails?: boolean
+  skip_duplicates?: boolean
+  date_range?: { start: string | null; end: string | null } | null
 }
 
 export interface PickResponse {
@@ -196,8 +231,16 @@ export interface PickResponse {
 
 export interface Prescan {
   file_count: number
+  parsable_count?: number
+  by_format?: Record<string, number>
   sampled?: number
+  sample_readable?: number
+  /** True when gps_ratio came from a sample - it must never be shown as exact. */
+  gps_estimated?: boolean
   gps_ratio?: number
+  gps_count_estimate?: number
+  no_gps_count_estimate?: number
+  include_subdirs?: boolean
   time_span?: { start: string | null; end: string | null }
   estimated_seconds?: number
   display_name?: string
@@ -255,6 +298,15 @@ export interface FenceCheck {
 }
 
 export type FenceAction = 'blur' | 'remove'
+export type Basemap = 'light' | 'dark' | 'terrain' | 'none'
+
+export interface ExportContents {
+  tracks: boolean
+  places: boolean
+  photos: boolean
+  labels: boolean
+  stats: boolean
+}
 
 export interface ExportRequest {
   trip_ids?: string[]
@@ -263,7 +315,13 @@ export interface ExportRequest {
   width?: number
   height?: number
   theme?: 'light' | 'dark'
-  fence_actions?: FenceAction | null
+  basemap?: Basemap
+  contents?: ExportContents
+  coarsen_to_city?: boolean
+  title?: string | null
+  subtitle?: string | null
+  /** A map is per fence. Either shape must cover every fence that is hit. */
+  fence_actions?: FenceAction | Record<string, FenceAction> | null
 }
 
 export interface CommuteOD {
@@ -276,8 +334,12 @@ export interface CommuteOD {
   evidence: {
     sample_dates?: string[]
     median_distance_m?: number | null
+    /** Known distances only; the unknown ones are counted, never summed as 0. */
+    total_distance_m?: number | null
     distance_unknown_count?: number
     median_duration_s?: number
+    first_seen?: string
+    last_seen?: string
     anchor_is_home_or_work?: boolean
   }
   track_count: number
@@ -318,6 +380,19 @@ export interface Stats {
   activity: Array<{ day: string; places: number; distance_m: number }>
 }
 
+export interface OverviewRow {
+  /** null is the "no place name" bucket - reported, never dropped. */
+  key: string | null
+  label: string | null
+  country?: string | null
+  city_count: number
+  trip_count: number
+  photo_count: number
+  distance_m: number
+  first_day: string | null
+  last_day: string | null
+}
+
 export interface AppSettings {
   default_tz: string
   cluster_radius_m: number
@@ -326,6 +401,9 @@ export interface AppSettings {
   accuracy_max_m: number
   photo_infer_tolerance_s: number
   geocoding_enabled: boolean
+  commute_min_repeats: number
+  display_local_time: boolean
+  /** Read-only: the token lives in .env and never crosses this boundary. */
   mapbox_token_configured: boolean
   presets: Record<string, { cluster_radius_m: number; cluster_min_dwell_s: number }>
 }
