@@ -21,7 +21,7 @@ differ, AGENTS.md is right.
 - Design changes (`docs/design/**`) and code changes never share a commit.
   Code is written only against a Change Request whose `status: reviewed`.
 - Commits: English, `type(scope): summary [CR-NNN]`, subject ≤ 20 words.
-- Code and config are English. `docs/**` is Chinese. UI strings live only in
-  `frontend/src/i18n/`.
+- Code and config are English. `docs/**` is Chinese. UI strings are zh/en/ja and
+  live only in `frontend/src/i18n/`.
 - Python 3.12, ruff (line length 100). TypeScript `strict`, no `any`.
   Import `@deck.gl/*` submodules, never the `deck.gl` umbrella package.

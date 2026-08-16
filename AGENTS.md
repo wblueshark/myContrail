@@ -68,14 +68,19 @@ Violating any of these is worse than shipping nothing.
 | Rule and process files — this file, `ARCHITECTURE.md`, tool adapters, hooks | **English** |
 | `docs/**` — design documents, working notes, Change Requests | **Chinese** |
 | `README.md`, `SETUP.md` — the two files a newcomer reads first | **English + Chinese** |
-| User-facing UI copy | Chinese, and **only** in `frontend/src/i18n/` |
+| User-facing UI copy | **Chinese, English and Japanese** — and **only** in `frontend/src/i18n/` |
 
 Two deliberate exceptions, both because the CJK text is *input data*, not prose:
 
 - `backend/scripts/verify_env.py` — `CJK_HAYSTACK` / `CJK_NEEDLE` are the
   fixtures for the CJK search check.
-- `frontend/src/i18n/zh.ts` — the single module holding display strings.
+- `frontend/src/i18n/zh.ts` and `ja.ts` — the modules holding display strings.
   Components reference English keys; no CJK literal appears in a component.
+
+The three locale modules are one shape: `en.ts` and `ja.ts` are typed
+`Record<keyof typeof zh, string>`, so a missing key is a compile error rather
+than a blank label in front of the user. Add a key to `zh.ts` and the other two
+stop building until they carry it too.
 
 ---
 
