@@ -1,0 +1,41 @@
+#!/bin/sh
+# Checks the commit subject against AGENTS.md section 6:
+#
+#     type(scope): summary [CR-NNN]
+#
+# English, 20 words or fewer, no trailing period. The narrative belongs in the
+# Change Request, not here.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+
+subject=$(head -n 1 "$1")
+
+# Generated subjects are not ours to police.
+case "$subject" in
+    "Merge "*|"Revert "*|"fixup!"*|"squash!"*|"#"*) exit 0 ;;
+esac
+
+fail=0
+types='feat|fix|perf|refactor|docs|test|chore'
+
+if ! printf '%s' "$subject" | grep -qE "^($types)(\([a-z0-9-]+\))?: .+"; then
+    echo "BLOCKED: subject does not match 'type(scope): summary'"
+    echo "  got:   $subject"
+    echo "  type:  $types"
+    echo "  e.g.   feat(import): stream large Google exports without loading them [CR-007]"
+    fail=1
+fi
+
+words=$(printf '%s' "$subject" | wc -w | tr -d ' ')
+if [ "$words" -gt 20 ]; then
+    echo "BLOCKED: subject is $words words, the limit is 20."
+    echo "  Put the detail in the Change Request, not the commit message."
+    fail=1
+fi
+
+case "$subject" in
+    *.) echo "BLOCKED: subject ends with a period."; fail=1 ;;
+esac
+
+[ "$fail" = 1 ] && { echo; echo "See AGENTS.md section 6.  Override:  git commit --no-verify"; exit 1; }
+exit 0

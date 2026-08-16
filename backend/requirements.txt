@@ -1,0 +1,71 @@
+# Contrail backend - runtime dependencies
+#
+# Versions pinned to the set verified working on 2026-08-15
+# (macOS 26 / Apple Silicon, Python 3.12.13, PostgreSQL 18.4 + PostGIS 3.6.4).
+# Verify with: python backend/scripts/verify_env.py
+#
+# Install:
+#   conda activate py312
+#   pip install -r backend/requirements.txt
+#
+# Requires Python >=3.12,<3.13. Python 3.14 has no prebuilt wheels for
+# pycairo / pillow-heif / timezonefinder and will attempt source builds.
+#
+# System libraries required before installing (Homebrew):
+#   brew install cairo libheif
+# Only transitive dependencies are omitted; pip resolves those automatically.
+
+# ── Web framework ─────────────────────────────────────────
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-multipart==0.0.32          # multipart file upload parsing
+
+# ── Database ──────────────────────────────────────────────
+# psycopg3: sync driver for Alembic, async driver for FastAPI.
+# psycopg-binary ships the prebuilt libpq, so no local build is needed.
+sqlalchemy[asyncio]==2.0.52
+geoalchemy2==0.20.0
+psycopg[binary,pool]==3.3.4
+alembic==1.19.1
+
+# ── Task queue ────────────────────────────────────────────
+# ARQ orchestrates only. CPU-bound work (EXIF, JPEG decode, clustering,
+# geometry simplification) must run in a ProcessPoolExecutor, otherwise the
+# event loop blocks and progress reporting / job cancellation stop working.
+arq==0.28.0
+redis==5.3.1
+hiredis==3.4.1                    # C parser, faster redis protocol handling
+
+# ── Parsers ───────────────────────────────────────────────
+ijson==3.5.1                      # streaming parse; Google exports reach GB scale
+exifread==3.5.1                   # photo EXIF, read-only
+                                  # NOTE: its tag names differ from the EXIF spec.
+                                  #   GPSDateStamp         -> "GPS GPSDate"
+                                  #   GPSHPositioningError -> unnamed, use "GPS Tag 0x001F"
+lxml==6.1.1                       # GPX / TCX; use iterparse for large files
+fitparse==1.2.0                   # NOTE: coords are semicircles (* 180 / 2**31),
+                                  #   timestamps use the Garmin epoch (1989-12-31)
+python-dateutil==2.9.0.post0
+
+# ── Imaging ───────────────────────────────────────────────
+# NOTE: always call Image.draft() before load() when generating thumbnails.
+# Measured 2.5x speedup (12ms -> 5ms) on a 4000x3000 JPEG. Without it the
+# "100k photos in 15 minutes" target is off by an order of magnitude.
+pillow==12.3.0
+pillow-heif==1.5.0                # HEIC (iPhone default); needs system libheif
+
+# ── Geo / timezone ────────────────────────────────────────
+# timezonefinder is required, not optional: timelinePath records carry
+# UTC-only timestamps, so the zone must be resolved from coordinates.
+# The wheel is large (~55 MB) because it embeds the timezone polygons.
+timezonefinder==8.2.5
+shapely==2.1.2
+numpy==2.5.2
+
+# ── Rendering ─────────────────────────────────────────────
+# Pillow's ImageDraw.line() has no antialiasing and produces hard
+# stair-stepped edges. Pillow does layout and compositing, cairo draws
+# vectors. Needs system cairo.
+pycairo==1.29.1

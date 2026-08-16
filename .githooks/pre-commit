@@ -1,0 +1,58 @@
+#!/bin/sh
+# Enforces the two rules that cannot be recovered from after the fact.
+#
+#   1. Private data never enters history. Sample/, data/ and .env are gitignored,
+#      but `git add -f` walks straight past that. Once a real coordinate is in a
+#      commit, removing it means rewriting history.
+#   2. Design and code never share a commit (AGENTS.md section 4). Traceability
+#      from a Change Request to a diff depends on the two being separable.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# ── 1. private data ───────────────────────────────────────
+private=$(printf '%s\n' "$staged" | grep -E '^(Sample/|data/|\.env$)' || true)
+if [ -n "$private" ]; then
+    echo "BLOCKED: private data is staged."
+    echo
+    printf '%s\n' "$private" | sed 's/^/    /'
+    echo
+    echo "  Sample/ is real personal location history. data/ holds imported"
+    echo "  uploads and generated exports. .env holds credentials."
+    echo "  Unstage them:  git restore --staged <file>"
+    fail=1
+fi
+
+# ── 2. design and code in one commit ──────────────────────
+design=$(printf '%s\n' "$staged" | grep '^docs/design/' || true)
+code=$(printf '%s\n' "$staged" | grep -E '^(backend|frontend)/|^\.env\.example$' || true)
+
+if [ -n "$design" ] && [ -n "$code" ]; then
+    [ "$fail" = 1 ] && echo
+    echo "BLOCKED: this commit changes design documents and code together."
+    echo
+    echo "  design:"
+    printf '%s\n' "$design" | sed 's/^/    /'
+    echo "  code:"
+    printf '%s\n' "$code" | sed 's/^/    /'
+    echo
+    echo "  A design change produces a Change Request, not an implementation."
+    echo "  Split it — same branch, separate commits:"
+    echo
+    echo "    1. docs(design): ...      the design change + CHANGELOG"
+    echo "    2. docs(cr): open CR-NNN  the change request"
+    echo "    3. feat(scope): ...       the implementation  [CR-NNN]"
+    echo "    4. docs(cr): close CR-NNN the result written back"
+    echo
+    echo "  See AGENTS.md section 4."
+    fail=1
+fi
+
+[ "$fail" = 1 ] && { echo; echo "Override only if you know why:  git commit --no-verify"; exit 1; }
+exit 0

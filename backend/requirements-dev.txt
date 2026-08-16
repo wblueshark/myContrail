@@ -1,0 +1,16 @@
+# Contrail backend - development dependencies
+#
+# Install:
+#   pip install -r backend/requirements-dev.txt
+#
+# Includes the runtime set, so this single file is enough for a dev machine.
+
+-r requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1                     # FastAPI TestClient transport
+hypothesis==6.165.9               # property tests: coordinate round-trips,
+                                  # duration conservation across clustering
+ruff==0.16.3
+mypy==2.3.1
