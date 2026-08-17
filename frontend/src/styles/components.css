@@ -433,7 +433,9 @@ select.input {
   display: flex;
   flex-direction: column;
   width: min(560px, 92vw);
-  max-height: 88vh;
+  /* dvh, not vh: on a phone the browser chrome eats the difference, and the
+     part that falls off the bottom is the footer with the confirm button. */
+  max-height: 88dvh;
   background: var(--color-bg);
   border: 1px solid var(--color-divider);
   border-radius: 0;
@@ -448,7 +450,10 @@ select.input {
 .dialog--fence {
   width: min(720px, 92vw);
 }
+/* Head and foot never shrink: the body is the only part that gives way, so the
+   action buttons stay on screen however little room is left. */
 .dialog__head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -467,6 +472,7 @@ select.input {
   padding: 18px 20px;
 }
 .dialog__foot {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;

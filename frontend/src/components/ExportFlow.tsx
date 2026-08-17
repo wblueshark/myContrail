@@ -280,16 +280,8 @@ export default function ExportFlow() {
           </button>
         </div>
 
-        <div style={{ display: 'flex', flex: 1, minHeight: 0, flexWrap: 'wrap' }}>
-          <div
-            style={{
-              width: 380,
-              flex: '1 1 320px',
-              borderRight: '1px solid var(--color-divider)',
-              overflowY: 'auto',
-              padding: '16px 18px',
-            }}
-          >
+        <div className="export">
+          <div className="export__form">
             {tripIds.length === 0 && (
               <div className="notice" style={{ marginBottom: 12 }}>
                 {t.exportPanel.nothingSelected}
@@ -420,30 +412,15 @@ export default function ExportFlow() {
             </div>
           </div>
 
-          <div
-            style={{
-              flex: '1 1 360px',
-              minWidth: 0,
-              padding: 18,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              background: 'color-mix(in srgb, var(--color-text) 4%, transparent)',
-            }}
-          >
+          <div className="export__preview">
             <div className="kicker">{t.exportPanel.preview}</div>
-            <div
-              className="blueprint"
-              style={{ flex: 1, display: 'grid', placeItems: 'center', overflow: 'hidden' }}
-            >
+            <div className="blueprint export__frame">
               <i className="corner tl" />
               <i className="corner tr" />
               <i className="corner bl" />
               <i className="corner br" />
               {busy && <span className="muted">{t.exportPanel.previewing}</span>}
-              {!busy && preview && (
-                <img src={preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%' }} />
-              )}
+              {!busy && preview && <img src={preview} alt="" />}
               {!busy && !preview && <span className="muted">{t.app.empty}</span>}
             </div>
             {error && <div className="notice notice--danger">{error}</div>}
