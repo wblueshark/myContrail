@@ -11,11 +11,13 @@
  *     the raw points, always.
  */
 
-import { Building2, Home, Lock, Trash2, X } from 'lucide-react'
+import { Building2, Home, Lock, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import {
+  useCreateFence,
   useDeleteFence,
+  useFenceSuggestions,
   useGeofences,
   useRecluster,
   useRecomputeCommute,
@@ -53,6 +55,8 @@ export default function SettingsDrawer() {
   const settings = useSettings()
   const save = useSaveSettings()
   const fences = useGeofences()
+  const suggestions = useFenceSuggestions()
+  const createFence = useCreateFence()
   const updateFence = useUpdateFence()
   const deleteFence = useDeleteFence()
   const recluster = useRecluster()
@@ -61,6 +65,19 @@ export default function SettingsDrawer() {
   const [draft, setDraft] = useState<Record<string, number>>({})
   const [pendingDelete, setPendingDelete] = useState<Geofence | null>(null)
   const [confirmRecluster, setConfirmRecluster] = useState(false)
+  // Manual fence entry. The confirmation modal only fires once, after the first
+  // import; without this the "you can add these in Settings later" promise on
+  // its skip checkbox would be false - and 13 years of real data held 24
+  // distinct home addresses, so later imports DO surface new ones.
+  const [adding, setAdding] = useState(false)
+  const [draftFence, setDraftFence] = useState({
+    kind: 'home' as 'home' | 'work',
+    label: '',
+    lat: '',
+    lon: '',
+    radius: 500,
+  })
+  const [showSuggestions, setShowSuggestions] = useState(false)
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -206,6 +223,84 @@ export default function SettingsDrawer() {
               {t.fences.empty}
             </p>
           )}
+          <button
+            className="btn btn-secondary btn-block btn-sm"
+            style={{ marginTop: 4 }}
+            onClick={() => setAdding(true)}
+          >
+            <Plus size={13} strokeWidth={1.5} />
+            {t.fences.addFence}
+          </button>
+
+          {(suggestions.data?.total ?? 0) > 0 && (
+            <>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ marginTop: 8 }}
+                onClick={() => setShowSuggestions((value) => !value)}
+              >
+                {t.settings.fenceSuggestions} ({suggestions.data?.total ?? 0}){' '}
+                {showSuggestions ? '▾' : '▸'}
+              </button>
+              {showSuggestions &&
+                (['google_confirmed', 'google_inferred', 'heuristic'] as const).map((tier) => {
+                  const items = (suggestions.data?.tiers?.[tier] ?? []).filter(
+                    (item) => !item.already_fenced,
+                  )
+                  if (!items.length) return null
+                  return (
+                    <div key={tier} style={{ marginTop: 8 }}>
+                      {/* The three tiers stay separate here too: a confirmed and
+                          an inferred home are different addresses. */}
+                      <div className="faint" style={{ fontSize: 11 }}>
+                        {tier === 'google_confirmed'
+                          ? t.fences.tierConfirmed
+                          : tier === 'google_inferred'
+                            ? t.fences.tierInferred
+                            : t.fences.tierHeuristic}
+                      </div>
+                      {items.map((item) => (
+                        <div
+                          key={`${item.confidence}:${item.lat}:${item.lon}`}
+                          className="row"
+                          style={{ gap: 8, padding: '4px 0' }}
+                        >
+                          {item.kind === 'home' ? (
+                            <Home size={14} strokeWidth={1.5} />
+                          ) : (
+                            <Building2 size={14} strokeWidth={1.5} />
+                          )}
+                          <span style={{ fontSize: 12 }}>
+                            {item.kind === 'home' ? t.fences.kindHome : t.fences.kindWork}
+                          </span>
+                          <span className="faint num" style={{ fontSize: 11 }}>
+                            {item.visit_count} ×
+                          </span>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            style={{ marginLeft: 'auto' }}
+                            onClick={() =>
+                              createFence.mutate({
+                                kind: item.kind,
+                                label:
+                                  item.kind === 'home' ? t.fences.kindHome : t.fences.kindWork,
+                                lat: item.lat,
+                                lon: item.lon,
+                                radius_m: item.radius_m,
+                                enabled: true,
+                              })
+                            }
+                          >
+                            {t.fences.adoptSuggestion}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })}
+            </>
+          )}
+
           <p className="muted" style={{ fontSize: 11, lineHeight: 1.6, marginTop: 8 }}>
             {t.fences.sideNote}
           </p>
@@ -382,6 +477,115 @@ export default function SettingsDrawer() {
                 }}
               >
                 {t.app.delete}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {adding && (
+        <div className="backdrop" style={{ zIndex: 36 }} onClick={() => setAdding(false)}>
+          <div className="dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="dialog__head">
+              <span className="dialog__title">{t.fences.addFence}</span>
+            </div>
+            <div className="dialog__body">
+              <div className="seg seg--block" style={{ marginBottom: 12 }}>
+                {(['home', 'work'] as const).map((kind) => (
+                  <label key={kind} className="seg-opt">
+                    <input
+                      type="radio"
+                      name="fkind"
+                      checked={draftFence.kind === kind}
+                      onChange={() => setDraftFence((current) => ({ ...current, kind }))}
+                    />
+                    {kind === 'home' ? t.fences.kindHome : t.fences.kindWork}
+                  </label>
+                ))}
+              </div>
+              <div className="field" style={{ marginBottom: 10 }}>
+                <label>{t.fences.label}</label>
+                <input
+                  className="input"
+                  value={draftFence.label}
+                  onChange={(event) =>
+                    setDraftFence((current) => ({ ...current, label: event.target.value }))
+                  }
+                />
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                <div className="field" style={{ flex: 1 }}>
+                  <label>{t.fences.lat}</label>
+                  <input
+                    className="input"
+                    inputMode="decimal"
+                    value={draftFence.lat}
+                    onChange={(event) =>
+                      setDraftFence((current) => ({ ...current, lat: event.target.value }))
+                    }
+                  />
+                </div>
+                <div className="field" style={{ flex: 1 }}>
+                  <label>{t.fences.lon}</label>
+                  <input
+                    className="input"
+                    inputMode="decimal"
+                    value={draftFence.lon}
+                    onChange={(event) =>
+                      setDraftFence((current) => ({ ...current, lon: event.target.value }))
+                    }
+                  />
+                </div>
+                <div className="field" style={{ width: 110 }}>
+                  <label>{t.fences.radius}</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={50}
+                    max={20000}
+                    step={50}
+                    value={draftFence.radius}
+                    onChange={(event) =>
+                      setDraftFence((current) => ({
+                        ...current,
+                        radius: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <p className="faint" style={{ fontSize: 11, marginTop: 10 }}>
+                {t.fences.manualHint}
+              </p>
+            </div>
+            <div className="dialog__foot" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setAdding(false)}>
+                {t.app.cancel}
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={
+                  !Number.isFinite(Number(draftFence.lat)) ||
+                  !Number.isFinite(Number(draftFence.lon)) ||
+                  draftFence.lat === '' ||
+                  draftFence.lon === ''
+                }
+                onClick={async () => {
+                  await createFence.mutateAsync({
+                    kind: draftFence.kind,
+                    label:
+                      draftFence.label.trim() ||
+                      (draftFence.kind === 'home' ? t.fences.kindHome : t.fences.kindWork),
+                    lat: Number(draftFence.lat),
+                    lon: Number(draftFence.lon),
+                    radius_m: draftFence.radius,
+                    enabled: true,
+                  })
+                  setDraftFence({ kind: 'home', label: '', lat: '', lon: '', radius: 500 })
+                  setAdding(false)
+                }}
+              >
+                {t.app.save}
               </button>
             </div>
           </div>

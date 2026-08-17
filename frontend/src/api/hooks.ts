@@ -112,6 +112,24 @@ export function useCreateGroup() {
   })
 }
 
+export function useUpdateGroup() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name: string; color?: string | null }) =>
+      api.updateGroup(id, body),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.groups }),
+  })
+}
+
+export function useUpdateTag() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name: string; color?: string | null }) =>
+      api.updateTag(id, body),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.tags }),
+  })
+}
+
 export function useDeleteGroup() {
   const client = useQueryClient()
   return useMutation({

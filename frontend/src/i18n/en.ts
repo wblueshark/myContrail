@@ -425,6 +425,10 @@ export const en: Copy = {
     empty: 'No fences yet. Suggestions appear here once data is imported.',
     offlineNote: 'Home inference runs entirely offline; your address is never sent anywhere.',
     addFence: 'Add a fence',
+    lat: 'Latitude',
+    lon: 'Longitude',
+    manualHint: 'Coordinates are stored locally and sent nowhere. Read them off the map and type them in.',
+    adoptSuggestion: 'Adopt as a fence',
     deleteTitle: 'Delete this fence?',
     deleteWarning: 'Once deleted, this location is no longer protected in exported images.',
     sideNote:

@@ -419,6 +419,10 @@ export const ja: Copy = {
     empty: 'まだ領域がありません。データを取り込むと候補が表示されます。',
     offlineNote: '住まいの推定は完全オフラインで、住所が外部に送信されることはありません。',
     addFence: '領域を追加',
+    lat: '緯度',
+    lon: '経度',
+    manualHint: '座標はローカルに保存され、外部には送信されません。地図で読み取って入力してください。',
+    adoptSuggestion: '領域として採用',
     deleteTitle: 'この領域を削除しますか？',
     deleteWarning: '削除すると、画像書き出し時にこの場所は保護されません。',
     sideNote:

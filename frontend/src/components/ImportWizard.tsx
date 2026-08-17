@@ -18,7 +18,15 @@ import { Camera, Folder, Map as MapIcon, PencilLine, X, Zap } from 'lucide-react
 import { useEffect, useState } from 'react'
 
 import { api } from '@/api/client'
-import { useCapabilities, useCreateImport, useGroups, useImports, useTags } from '@/api/hooks'
+import {
+  useCapabilities,
+  useCreateGroup,
+  useCreateImport,
+  useCreateTag,
+  useGroups,
+  useImports,
+  useTags,
+} from '@/api/hooks'
 import type { ImportReport, Prescan, TaskState } from '@/api/types'
 import Blueprint from '@/components/Blueprint'
 import { useCopy } from '@/i18n'
@@ -39,6 +47,8 @@ export default function ImportWizard() {
   const groups = useGroups()
   const tags = useTags()
   const createImport = useCreateImport()
+  const createGroup = useCreateGroup()
+  const createTag = useCreateTag()
 
   const [step, setStep] = useState(1)
   const [source, setSource] = useState<Source>('photo')
@@ -51,6 +61,11 @@ export default function ImportWizard() {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  // Inline creation, because step 2 is where a batch gets filed: sending the
+  // user to another page to make a group would lose the wizard's state.
+  const [newGroupName, setNewGroupName] = useState('')
+  const [newTagName, setNewTagName] = useState('')
 
   const [includeSubdirs, setIncludeSubdirs] = useState(true)
   const [inferGps, setInferGps] = useState(true)
@@ -347,6 +362,27 @@ export default function ImportWizard() {
                 })}
               </div>
 
+              <div className="row" style={{ gap: 6, marginTop: 10 }}>
+                <input
+                  className="input"
+                  style={{ maxWidth: 200 }}
+                  placeholder={t.importWizard.newGroup}
+                  value={newGroupName}
+                  onChange={(event) => setNewGroupName(event.target.value)}
+                />
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={!newGroupName.trim()}
+                  onClick={async () => {
+                    const created = await createGroup.mutateAsync({ name: newGroupName.trim() })
+                    setGroupId(created.id)
+                    setNewGroupName('')
+                  }}
+                >
+                  + {t.importWizard.newGroup}
+                </button>
+              </div>
+
               <div className="kicker" style={{ margin: '20px 0 8px' }}>
                 {t.importWizard.tags}
               </div>
@@ -371,6 +407,27 @@ export default function ImportWizard() {
                     {tag.name}
                   </label>
                 ))}
+              </div>
+
+              <div className="row" style={{ gap: 6, marginTop: 10 }}>
+                <input
+                  className="input"
+                  style={{ maxWidth: 200 }}
+                  placeholder={t.importWizard.newTag}
+                  value={newTagName}
+                  onChange={(event) => setNewTagName(event.target.value)}
+                />
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={!newTagName.trim()}
+                  onClick={async () => {
+                    const created = await createTag.mutateAsync({ name: newTagName.trim() })
+                    setTagIds((current) => [...current, created.id])
+                    setNewTagName('')
+                  }}
+                >
+                  + {t.importWizard.newTag}
+                </button>
               </div>
 
               <div className="notice" style={{ marginTop: 22, maxWidth: 620 }}>

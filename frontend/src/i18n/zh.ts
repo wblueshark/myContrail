@@ -427,6 +427,10 @@ export const t = {
     empty: '还没有围栏。导入数据后这里会给出建议。',
     offlineNote: '住址推算完全离线，不会把你的地址发给任何第三方。',
     addFence: '手动添加围栏',
+    lat: '纬度',
+    lon: '经度',
+    manualHint: '坐标只写入本机数据库，不会发给任何服务。可在地图上读出目标位置的坐标后填入。',
+    adoptSuggestion: '采用为围栏',
     deleteTitle: '删除这个围栏？',
     deleteWarning: '删除后，导出图片时这个位置将不再被保护。',
     sideNote:

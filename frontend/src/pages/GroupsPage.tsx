@@ -11,10 +11,22 @@
  *     and the server refuses it anyway.
  */
 
-import { Lock, MapPin, Luggage } from 'lucide-react'
+import { Lock, MapPin, Luggage, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
-import { useBulkAssign, useGroups, usePlaces, useTags, useTrips } from '@/api/hooks'
+import {
+  useBulkAssign,
+  useCreateGroup,
+  useCreateTag,
+  useDeleteGroup,
+  useDeleteTag,
+  useGroups,
+  usePlaces,
+  useTags,
+  useTrips,
+  useUpdateGroup,
+  useUpdateTag,
+} from '@/api/hooks'
 import { useCopy } from '@/i18n'
 
 type Kind = 'group' | 'tag'
@@ -34,10 +46,22 @@ export default function GroupsPage() {
   const groups = useGroups()
   const tags = useTags()
   const assign = useBulkAssign()
+  const createGroup = useCreateGroup()
+  const createTag = useCreateTag()
+  const updateGroup = useUpdateGroup()
+  const updateTag = useUpdateTag()
+  const deleteGroup = useDeleteGroup()
+  const deleteTag = useDeleteTag()
 
   const [selected, setSelected] = useState<{ kind: Kind; id: string } | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [moveTarget, setMoveTarget] = useState<string>('')
+  // One dialog drives create and rename: same field, same validation, and the
+  // only difference is whether an id is being edited.
+  const [editing, setEditing] = useState<{ kind: Kind; id: string | null } | null>(null)
+  const [draftName, setDraftName] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const active = selected ?? (groups.data?.[0] ? { kind: 'group' as Kind, id: groups.data[0].id } : null)
   const activeGroup = active?.kind === 'group' ? groups.data?.find((g) => g.id === active.id) : undefined
@@ -121,6 +145,19 @@ export default function GroupsPage() {
             </button>
           ))}
 
+          <div style={{ padding: '8px 16px 0' }}>
+            <button
+              className="btn btn-secondary btn-block btn-sm"
+              onClick={() => {
+                setDraftName('')
+                setEditing({ kind: 'group', id: null })
+              }}
+            >
+              <Plus size={13} strokeWidth={1.5} />
+              {t.groups.newGroup}
+            </button>
+          </div>
+
           <div className="kicker" style={{ padding: '20px 16px 8px' }}>
             {t.groups.tags}
           </div>
@@ -140,6 +177,18 @@ export default function GroupsPage() {
               </span>
             </button>
           ))}
+          <div style={{ padding: '8px 16px 0' }}>
+            <button
+              className="btn btn-secondary btn-block btn-sm"
+              onClick={() => {
+                setDraftName('')
+                setEditing({ kind: 'tag', id: null })
+              }}
+            >
+              <Plus size={13} strokeWidth={1.5} />
+              {t.groups.newTag}
+            </button>
+          </div>
         </aside>
 
         <div className="split__main">
@@ -151,6 +200,31 @@ export default function GroupsPage() {
             <span className="muted" style={{ fontSize: 12 }}>
               {t.groups.members}
             </span>
+            {active && (
+              <div className="row" style={{ marginLeft: 'auto', gap: 6 }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={activeGroup?.kind === 'system_commute'}
+                  title={activeGroup?.kind === 'system_commute' ? t.groups.systemLocked : undefined}
+                  onClick={() => {
+                    setDraftName(activeGroup?.name ?? activeTag?.name ?? '')
+                    setEditing({ kind: active.kind, id: active.id })
+                  }}
+                >
+                  <Pencil size={13} strokeWidth={1.5} />
+                  {t.app.rename}
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  disabled={activeGroup?.kind === 'system_commute'}
+                  title={activeGroup?.kind === 'system_commute' ? t.groups.systemLocked : undefined}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  <Trash2 size={13} strokeWidth={1.5} />
+                  {t.app.delete}
+                </button>
+              </div>
+            )}
           </div>
           <p className="muted" style={{ fontSize: 12, maxWidth: 640, marginTop: 6 }}>
             {t.groups.rule}
@@ -295,6 +369,103 @@ export default function GroupsPage() {
           )}
         </div>
       </div>
+
+      {editing && (
+        <div className="backdrop" style={{ zIndex: 36 }} onClick={() => setEditing(null)}>
+          <div className="dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="dialog__head">
+              <span className="dialog__title">
+                {editing.id
+                  ? t.app.rename
+                  : editing.kind === 'group'
+                    ? t.groups.newGroup
+                    : t.groups.newTag}
+              </span>
+            </div>
+            <div className="dialog__body">
+              <div className="field">
+                <label>{t.groups.namePrompt}</label>
+                <input
+                  className="input"
+                  value={draftName}
+                  autoFocus
+                  onChange={(event) => setDraftName(event.target.value)}
+                />
+              </div>
+              {error && (
+                <p style={{ color: 'var(--color-danger)', marginTop: 8 }}>{error}</p>
+              )}
+            </div>
+            <div className="dialog__foot" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setEditing(null)}>
+                {t.app.cancel}
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={!draftName.trim()}
+                onClick={async () => {
+                  setError(null)
+                  const name = draftName.trim()
+                  try {
+                    if (editing.kind === 'group') {
+                      const saved = editing.id
+                        ? await updateGroup.mutateAsync({ id: editing.id, name })
+                        : await createGroup.mutateAsync({ name })
+                      setSelected({ kind: 'group', id: saved.id })
+                    } else {
+                      const saved = editing.id
+                        ? await updateTag.mutateAsync({ id: editing.id, name })
+                        : await createTag.mutateAsync({ name })
+                      setSelected({ kind: 'tag', id: saved.id })
+                    }
+                    setEditing(null)
+                  } catch (caught) {
+                    // 409 from the (user_id, name) unique index - shown in place
+                    // rather than as a raw error string.
+                    const status = (caught as { status?: number }).status
+                    setError(status === 409 ? t.groups.nameExists : String(caught))
+                  }
+                }}
+              >
+                {t.app.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && active && (
+        <div className="backdrop" style={{ zIndex: 36 }} onClick={() => setConfirmDelete(false)}>
+          <div className="dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="dialog__head">
+              <span className="dialog__title">
+                {activeGroup?.name ?? activeTag?.name}
+              </span>
+            </div>
+            <div className="dialog__body">
+              <p className="muted">
+                {active.kind === 'group' ? t.groups.deleteGroupWarning : t.groups.deleteTagWarning}
+              </p>
+            </div>
+            <div className="dialog__foot" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setConfirmDelete(false)}>
+                {t.app.cancel}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={async () => {
+                  if (active.kind === 'group') await deleteGroup.mutateAsync(active.id)
+                  else await deleteTag.mutateAsync(active.id)
+                  setSelected(null)
+                  setConfirmDelete(false)
+                }}
+              >
+                {t.app.delete}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
