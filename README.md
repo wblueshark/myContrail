@@ -47,6 +47,11 @@ Currently not supported: share links, cloud sync, accounts, and any large langua
 
 ---
 
+<p align="center">
+  <img src="assets/mainPage_sample_en.png" alt="Main Page" width="1024">
+</p>
+
+
 ## 凝迹
 
 **这是位置和轨迹，以及照片的聚合，不是采集程序。** 没有常驻的手机 App，没有后台服务，也不需要注册账号。基于已有的数据：磁盘里的照片、从 Google 申请导出的时间线、运动手表生成的 GPX，Contrail 把数据合成一条前后连贯、可以查询的轨迹。
