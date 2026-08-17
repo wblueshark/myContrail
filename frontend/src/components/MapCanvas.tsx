@@ -137,6 +137,10 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
    */
   const installLayers = useCallback(
     (instance: mapboxgl.Map) => {
+      // Idempotent: a second `style.load` for a style that already carries our
+      // sources would throw on the duplicate id.
+      if (instance.getSource(TRACK_SOURCE)) return
+
       const paint = PAINT[themeRef.current]
 
       instance.addSource(TRACK_SOURCE, {
@@ -288,7 +292,17 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
       instance.removeControl(overlay.current)
       overlay.current = null
     }
-    instance.setStyle(BASEMAP[theme])
+    // `diff: false` is not a performance choice, it is the contract. Mapbox
+    // diffs two styles when it can, and a diffed swap deletes the sources and
+    // layers we added WITHOUT firing `style.load` - so nothing would put them
+    // back and the map would come up with a new basemap and no data on it. The
+    // two font fields are here only because the option type demands them; both
+    // are already undefined on the map.
+    instance.setStyle(BASEMAP[theme], {
+      diff: false,
+      localFontFamily: undefined,
+      localIdeographFontFamily: undefined,
+    })
   }, [theme])
 
   // Filters and visibility are style updates - no refetch, no tile reload.

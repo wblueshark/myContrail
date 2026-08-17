@@ -1,5 +1,5 @@
 /* Design tokens, ported from the Industry design system bundle
-   (Sample/Design_v2/project/_ds/industry-*/styles.css).
+   (the styles.css under Sample/Design_v2/project/_ds/, industry theme).
 
    Two deliberate differences from the bundle:
      * the webfont @import is gone. Fonts are vendored through @fontsource, so a
