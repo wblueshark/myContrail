@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,17 +28,29 @@ async def list_groups(
 ) -> list[GroupOut]:
     rows = (
         await session.execute(
-            select(Group, func.count(Trip.id))
-            .outerjoin(Trip, Trip.group_id == Group.id)
-            .where(Group.user_id == user_id)
-            .group_by(Group.id)
-            .order_by(Group.created_at)
+            text(
+                """
+                SELECT g.id, g.name, g.kind::text AS kind, g.color,
+                       (SELECT count(*) FROM trip t WHERE t.group_id = g.id) AS trip_count,
+                       -- Same inheritance rule the members list uses: a place
+                       -- with no group of its own belongs to its trip's group.
+                       -- Counting it any other way puts a number on screen that
+                       -- the list underneath contradicts.
+                       (SELECT count(*) FROM place p
+                         WHERE p.group_id = g.id
+                            OR (p.group_id IS NULL AND EXISTS
+                                 (SELECT 1 FROM trip t2
+                                   WHERE t2.id = p.trip_id AND t2.group_id = g.id))
+                       ) AS place_count
+                  FROM "group" g
+                 WHERE g.user_id = :uid
+                 ORDER BY g.created_at
+                """
+            ),
+            {"uid": str(user_id)},
         )
     ).all()
-    return [
-        GroupOut(id=g.id, name=g.name, kind=g.kind, color=g.color, trip_count=count)
-        for g, count in rows
-    ]
+    return [GroupOut(**dict(r._mapping)) for r in rows]
 
 
 @router.post("/groups", response_model=GroupOut, status_code=201)
@@ -96,9 +108,21 @@ async def list_tags(
     user_id=Depends(current_user_id), session: AsyncSession = Depends(get_session)
 ) -> list[TagOut]:
     rows = (
-        await session.execute(select(Tag).where(Tag.user_id == user_id).order_by(Tag.name))
-    ).scalars()
-    return [TagOut(id=t.id, name=t.name, color=t.color) for t in rows]
+        await session.execute(
+            text(
+                """
+                SELECT g.id, g.name, g.color,
+                       (SELECT count(*) FROM trip_tag x WHERE x.tag_id = g.id) AS trip_count,
+                       (SELECT count(*) FROM place_tag x WHERE x.tag_id = g.id) AS place_count
+                  FROM tag g
+                 WHERE g.user_id = :uid
+                 ORDER BY g.name
+                """
+            ),
+            {"uid": str(user_id)},
+        )
+    ).all()
+    return [TagOut(**dict(r._mapping)) for r in rows]
 
 
 @router.post("/tags", response_model=TagOut, status_code=201)
@@ -177,6 +201,24 @@ async def patch_trip(
     return {"id": str(trip.id), "title": trip.title}
 
 
+async def _reject_system_group(session: AsyncSession, group_id) -> None:
+    """Refuse a manual move INTO the system commute group.
+
+    Moving out is allowed - that is the user disagreeing with the detector, and
+    it is their call. Moving in is not: the commute pass owns that group and
+    would overwrite the assignment on its next run, so the UI would show a
+    change that quietly disappears later.
+    """
+    if group_id is None:
+        return
+    group = await session.get(Group, group_id)
+    if group is not None and group.kind == "system_commute":
+        raise HTTPException(
+            status_code=422,
+            detail="the commute group is maintained by the detector and cannot be assigned by hand",
+        )
+
+
 @router.post("/trips/bulk-assign")
 async def bulk_assign_trips(
     payload: BulkAssign,
@@ -185,6 +227,7 @@ async def bulk_assign_trips(
 ) -> dict:
     if not payload.trip_ids:
         return {"updated": 0}
+    await _reject_system_group(session, payload.group_id)
     ids = [str(t) for t in payload.trip_ids]
 
     if payload.group_id is not None:
@@ -215,6 +258,7 @@ async def bulk_assign_places(
 ) -> dict:
     if not payload.place_ids:
         return {"updated": 0}
+    await _reject_system_group(session, payload.group_id)
     ids = [str(p) for p in payload.place_ids]
 
     if payload.group_id is not None:

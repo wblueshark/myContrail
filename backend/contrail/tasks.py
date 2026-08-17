@@ -39,10 +39,29 @@ class TaskState:
     stage: str | None = None
     processed: int = 0
     total: int | None = None
+    # One entry per phase, kept in the order the phases were first reported.
+    # The import wizard draws three bars at once (EXIF / thumbnails /
+    # clustering), which a single current-stage field cannot describe.
+    stages: dict[str, dict[str, Any]] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
+
+    def eta_seconds(self) -> int | None:
+        """Remaining seconds, extrapolated from the run so far.
+
+        None while the total is unknown or nothing has been processed yet: a
+        countdown invented from no data is worse than no countdown.
+        """
+        if self.status != "running" or not self.total or self.processed <= 0:
+            return None
+        elapsed = (datetime.now(UTC) - self.created_at).total_seconds()
+        if elapsed <= 0:
+            return None
+        rate = self.processed / elapsed
+        remaining = max(0, self.total - self.processed)
+        return int(remaining / rate) if rate > 0 else None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -55,6 +74,11 @@ class TaskState:
             # absolute count is reported rather than an invented percentage.
             "processed": self.processed,
             "total": self.total,
+            "stages": [
+                {"key": key, "processed": v["processed"], "total": v["total"]}
+                for key, v in self.stages.items()
+            ],
+            "eta_seconds": self.eta_seconds(),
             "result": self.result,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
@@ -90,6 +114,7 @@ class TaskManager:
             state.stage = stage
             state.processed = processed
             state.total = total
+            state.stages[stage] = {"processed": processed, "total": total}
             # Called from the worker coroutine; publishing is fire-and-forget so
             # a slow SSE consumer can never stall the import itself.
             loop.call_soon_threadsafe(self._publish, state)

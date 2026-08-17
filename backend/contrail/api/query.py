@@ -47,6 +47,11 @@ async def list_trips(
     tag: uuid.UUID | None = None,
     commute: str | None = Query(default=None, pattern="^(pure|mixed|none)$"),
     q: str | None = None,
+    # The overview drills down into these: a trip belongs to a country, city or
+    # anchor when at least one of its places does.
+    country: str | None = None,
+    city: str | None = None,
+    anchor: uuid.UUID | None = None,
     limit: int = Query(default=200, le=MAX_LIMIT),
     cursor: date | None = None,
 ) -> list[TripOut]:
@@ -70,6 +75,14 @@ async def list_trips(
            AND (CAST(:q AS text) IS NULL OR t.title ILIKE '%' || :q || '%')
            AND (CAST(:tag_id AS uuid) IS NULL OR EXISTS
                  (SELECT 1 FROM trip_tag x WHERE x.trip_id = t.id AND x.tag_id = :tag_id))
+           AND (CAST(:country AS text) IS NULL OR EXISTS
+                 (SELECT 1 FROM place p WHERE p.trip_id = t.id
+                    AND coalesce(p.geo_country, '') = :country))
+           AND (CAST(:city AS text) IS NULL OR EXISTS
+                 (SELECT 1 FROM place p WHERE p.trip_id = t.id
+                    AND coalesce(p.geo_city, '') = :city))
+           AND (CAST(:anchor AS uuid) IS NULL OR EXISTS
+                 (SELECT 1 FROM place p WHERE p.trip_id = t.id AND p.anchor_id = :anchor))
            {clause}
          GROUP BY t.id
          ORDER BY t.local_date DESC
@@ -87,6 +100,9 @@ async def list_trips(
                 "commute": commute,
                 "cursor": cursor,
                 "q": q,
+                "country": country,
+                "city": city,
+                "anchor": str(anchor) if anchor else None,
                 "limit": limit,
                 **params,
             },
@@ -407,21 +423,40 @@ async def list_anchors(
     user_id=Depends(current_user_id),
     session: AsyncSession = Depends(get_session),
     kind: str | None = None,
+    country: str | None = None,
+    city: str | None = None,
+    sort: str = Query(default="duration", pattern="^(visits|duration)$"),
+    limit: int = Query(default=200, le=MAX_LIMIT),
 ) -> list[AnchorOut]:
+    """Place anchors: one row per distinct location, however many visits.
+
+    This is also the overview's place dimension. It ranks by visit count there
+    ("where do I keep going back to"), while home/work inference wants total
+    dwell - hence the sort parameter rather than one hard-coded order.
+    """
+    order = (
+        "visit_count DESC, total_duration_s DESC" if sort == "visits" else "total_duration_s DESC"
+    )
     rows = (
         await session.execute(
             text(
-                """
-                SELECT id, ST_Y(centroid) AS lat, ST_X(centroid) AS lon,
-                       kind::text AS kind, kind_source, visit_count, total_duration_s,
-                       weekday_ratio, first_visit_utc, last_visit_utc,
-                       geo_name, geo_city, hour_histogram
-                  FROM place_anchor
-                 WHERE user_id = :uid AND (CAST(:kind AS text) IS NULL OR kind::text = :kind)
-                 ORDER BY total_duration_s DESC
+                f"""
+                SELECT a.id, ST_Y(a.centroid) AS lat, ST_X(a.centroid) AS lon,
+                       a.kind::text AS kind, a.kind_source, a.visit_count, a.total_duration_s,
+                       a.weekday_ratio, a.first_visit_utc, a.last_visit_utc,
+                       a.geo_name, a.geo_city, a.geo_country, a.hour_histogram,
+                       (SELECT count(DISTINCT p.trip_id) FROM place p
+                         WHERE p.anchor_id = a.id AND p.trip_id IS NOT NULL) AS trip_count
+                  FROM place_anchor a
+                 WHERE a.user_id = :uid
+                   AND (CAST(:kind AS text) IS NULL OR a.kind::text = :kind)
+                   AND (CAST(:country AS text) IS NULL OR coalesce(a.geo_country, '') = :country)
+                   AND (CAST(:city AS text) IS NULL OR coalesce(a.geo_city, '') = :city)
+                 ORDER BY {order}
+                 LIMIT :limit
                 """
             ),
-            {"uid": str(user_id), "kind": kind},
+            {"uid": str(user_id), "kind": kind, "country": country, "city": city, "limit": limit},
         )
     ).all()
     return [AnchorOut(**dict(r._mapping)) for r in rows]

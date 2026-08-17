@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from contrail.models import CommuteOD, Geofence, PlaceAnchor
+from contrail.models import AppUser, CommuteOD, Geofence, PlaceAnchor
 from contrail.pipeline import anchors as anchor_lib
 from contrail.pipeline import commute as commute_lib
 from contrail.pipeline.trips import COMMUTE_TITLE
@@ -113,6 +113,18 @@ async def _semantic_types(session: AsyncSession, user_id: UUID) -> dict[str, str
     return {r.id: r.geo_name for r in rows if r.geo_name in {"Home", "Work"}}
 
 
+async def _min_commute_repeats(session: AsyncSession, user_id: UUID) -> int:
+    """The user's "minimum commute repeats", or the shipped default.
+
+    Tunable because the commute page offers "wrong call? adjust the parameters":
+    a threshold the user is invited to argue with cannot be a module constant.
+    """
+    user = await session.get(AppUser, user_id)
+    stored = (user.settings or {}) if user else {}
+    value = stored.get("commute_min_repeats")
+    return int(value) if isinstance(value, int | float) else commute_lib.MIN_OCCURRENCE
+
+
 async def refresh_commute(session: AsyncSession, user_id: UUID) -> dict:
     """Detect commute OD pairs and mark the tracks that belong to them.
 
@@ -205,7 +217,12 @@ async def refresh_commute(session: AsyncSession, user_id: UUID) -> dict:
         ).all()
     }
 
-    results = commute_lib.detect_commute_ods(legs, home_work, workday_count=int(workdays))
+    results = commute_lib.detect_commute_ods(
+        legs,
+        home_work,
+        workday_count=int(workdays),
+        min_occurrence=await _min_commute_repeats(session, user_id),
+    )
     for od in results:
         record = CommuteOD(
             user_id=user_id,

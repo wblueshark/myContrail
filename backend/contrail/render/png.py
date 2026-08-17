@@ -68,13 +68,34 @@ class RenderData:
     clipped: bool = False
 
 
-def _fence_expr(column: str, action: str | None) -> str:
-    """SQL fragment applying the chosen fence policy to a geometry column."""
-    if action == "remove":
-        return f"contrail_fence_remove({column}, :uid)"
-    if action == "blur":
-        return f"contrail_fence_blur({column}, :uid)"
-    return column
+FenceAction = str | dict[UUID, str] | None
+
+
+def _policy_call(fn_suffix: str, column: str, fence_ids: str | None) -> str:
+    fn = "contrail_fence_remove" if fn_suffix == "remove" else "contrail_fence_blur"
+    return f"{fn}({column}, :uid)" if fence_ids is None else f"{fn}({column}, :uid, {fence_ids})"
+
+
+def _fence_expr(column: str, action: FenceAction, coarsen: bool = False) -> str:
+    """SQL fragment applying the chosen fence policy to a geometry column.
+
+    The dict form is per fence: each policy is applied to the subset it was
+    chosen for, nested so that "blur home, remove work" means exactly that.
+    Fence ids come from a validated UUID field, which is why they can be
+    interpolated - they cannot carry anything but hex and dashes.
+    """
+    expr = column
+    if isinstance(action, str):
+        expr = _policy_call(action, expr, None)
+    elif isinstance(action, dict):
+        for fence_id, policy in sorted(action.items(), key=lambda kv: str(kv[0])):
+            ids = f"ARRAY['{UUID(str(fence_id))}']::uuid[]"
+            expr = _policy_call(policy, expr, ids)
+    if coarsen:
+        # Outermost on purpose: coarsening must never be able to drag a point
+        # back out of a fence that was just applied.
+        expr = f"contrail_coarsen_city({expr})"
+    return expr
 
 
 def truncate_times(value: datetime | None, clipped: bool) -> datetime | None:
@@ -94,7 +115,9 @@ async def collect(
     session: AsyncSession,
     user_id: UUID,
     scope: RenderScope,
-    fence_action: str | None,
+    fence_action: FenceAction,
+    coarsen: bool = False,
+    contents: dict[str, bool] | None = None,
 ) -> RenderData:
     """Fetch every feature in scope, with the fence policy already applied."""
     params = {
@@ -102,10 +125,11 @@ async def collect(
         "trip_ids": [str(t) for t in scope.trip_ids] or None,
         "place_ids": [str(p) for p in scope.place_ids] or None,
     }
+    want = {"tracks": True, "places": True, "photos": True, **(contents or {})}
     data = RenderData(clipped=fence_action is not None)
 
-    track_geom = _fence_expr("t.geom", fence_action)
-    tracks = (
+    track_geom = _fence_expr("t.geom", fence_action, coarsen)
+    tracks = () if not want["tracks"] else (
         await session.execute(
             text(
                 f"""
@@ -134,8 +158,8 @@ async def collect(
             }
         )
 
-    place_geom = _fence_expr("p.centroid", fence_action)
-    places = (
+    place_geom = _fence_expr("p.centroid", fence_action, coarsen)
+    places = () if not want["places"] else (
         await session.execute(
             text(
                 f"""
@@ -156,10 +180,17 @@ async def collect(
         # intended outcome, and there is nothing left to draw.
         if point is None:
             continue
-        data.places.append({"lat": point[0], "lon": point[1], "duration_s": row.duration_s})
+        data.places.append(
+            {
+                "lat": point[0],
+                "lon": point[1],
+                "duration_s": row.duration_s,
+                "label": row.label,
+            }
+        )
 
-    photo_geom = _fence_expr("ph.geom", fence_action)
-    photos = (
+    photo_geom = _fence_expr("ph.geom", fence_action, coarsen)
+    photos = () if not want["photos"] else (
         await session.execute(
             text(
                 f"""
@@ -318,44 +349,79 @@ async def render(
     width: int = 1080,
     height: int = 1920,
     theme: str = "light",
-    fence_action: str | None = None,
+    fence_action: FenceAction = None,
+    basemap: str = "light",
+    contents: dict[str, bool] | None = None,
+    coarsen_to_city: bool = False,
+    title: str | None = None,
+    subtitle: str | None = None,
 ) -> bytes:
     """Render one PNG. The fence policy is applied while collecting geometry."""
     from PIL import Image
 
-    data = await collect(session, user_id, scope, fence_action)
+    want = {"tracks": True, "places": True, "photos": True, "labels": False, "stats": True}
+    want.update(contents or {})
+
+    data = await collect(session, user_id, scope, fence_action, coarsen_to_city, want)
     if data.bbox is None:
         raise ValueError("nothing to render: the selection contains no geometry")
+    if title:
+        data.title = title
+    if subtitle:
+        data.subtitle = subtitle
 
     header = 150 if template == "poster" else 0
-    footer = 110 if template in {"poster", "collage"} else 0
+    footer = 110 if template in {"poster", "collage"} and want["stats"] else 0
     grid = 360 if template == "collage" and data.photos else 0
     map_height = max(200, height - header - footer - grid)
 
     viewport = fit_viewport(data.bbox, width, map_height)
-    background = (255, 255, 255) if theme == "light" else (18, 19, 22)
-    canvas = Image.new("RGB", (width, height), background)
-
-    basemap = await render_basemap(viewport, theme=theme)
-    canvas.paste(basemap, (0, header))
+    transparent = basemap == "none"
+    if transparent:
+        # No basemap means no ground to paint and nothing to credit.
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    else:
+        background = (255, 255, 255) if theme == "light" else (18, 19, 22)
+        canvas = Image.new("RGB", (width, height), background)
+        canvas.paste(await render_basemap(viewport, theme=basemap), (0, header))
 
     overlay = Image.open(io.BytesIO(draw_features((width, map_height), viewport, data))).convert(
         "RGBA"
     )
     canvas.paste(overlay, (0, header), overlay)
 
-    _draw_photos(canvas, viewport, data, header)
+    if want["labels"]:
+        _draw_place_labels(canvas, viewport, data, theme, header)
+    if want["photos"]:
+        _draw_photos(canvas, viewport, data, header)
 
     if template == "poster":
-        _draw_poster_chrome(canvas, data, theme, header, footer)
-    if template == "collage" and data.photos:
+        _draw_poster_chrome(canvas, data, theme, header, footer, stats=want["stats"])
+    if template == "collage" and data.photos and want["photos"]:
         _draw_photo_grid(canvas, data, y=height - footer - grid, height=grid, width=width)
 
-    _draw_attribution(canvas, theme)
+    # The credit is not optional while a basemap is drawn - that is the licence,
+    # not a preference.
+    if not transparent:
+        _draw_attribution(canvas, theme)
 
     out = io.BytesIO()
     canvas.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def _draw_place_labels(canvas, viewport: Viewport, data: RenderData, theme: str, offset_y: int):
+    """Place names next to their dots, when the export asked for them."""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(canvas)
+    ink = (30, 32, 36) if theme == "light" else (223, 232, 241)
+    for place in data.places:
+        label = place.get("label")
+        if not label:
+            continue
+        x, y = viewport.project(place["lat"], place["lon"])
+        draw.text((x + 10, y - 6 + offset_y), str(label), font=_font(22), fill=ink)
 
 
 def _draw_photos(canvas, viewport: Viewport, data: RenderData, offset_y: int) -> None:
@@ -403,7 +469,9 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
-def _draw_poster_chrome(canvas, data: RenderData, theme: str, header: int, footer: int) -> None:
+def _draw_poster_chrome(
+    canvas, data: RenderData, theme: str, header: int, footer: int, stats: bool = True
+) -> None:
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(canvas)
@@ -415,7 +483,8 @@ def _draw_poster_chrome(canvas, data: RenderData, theme: str, header: int, foote
     draw.text((48, 100), data.subtitle, font=_font(24), fill=(fg[0], fg[1], fg[2]))
 
     draw.rectangle([0, canvas.height - footer, canvas.width, canvas.height], fill=bg)
-    draw.text((48, canvas.height - footer + 34), data.stats_line, font=_font(26), fill=fg)
+    if stats and footer:
+        draw.text((48, canvas.height - footer + 34), data.stats_line, font=_font(26), fill=fg)
 
 
 def _draw_photo_grid(canvas, data: RenderData, y: int, height: int, width: int) -> None:

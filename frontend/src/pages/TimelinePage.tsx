@@ -1,170 +1,161 @@
-/** Year -> month -> day drill-down, plus the statistics panel. */
+/**
+ * Timeline: year rail, twelve month bars, month sections of trip cards.
+ *
+ * A trip is one day (04 section 10), so a month section is a list of days -
+ * there is no multi-day entity to fold them into.
+ */
 
 import { useMemo, useState } from 'react'
 
 import { useStats, useTrips } from '@/api/hooks'
-import { t } from '@/i18n/zh'
-import { useAppStore } from '@/store/appStore'
-import { formatKm } from './TripsPage'
+import TripCard from '@/components/TripCard'
+import { useCopy } from '@/i18n'
 
 export default function TimelinePage() {
-  const navigate = useAppStore((state) => state.navigate)
-  const [year, setYear] = useState<number | null>(null)
-  const [month, setMonth] = useState<number | null>(null)
-
+  const t = useCopy()
+  const trips = useTrips({ limit: 500 })
   const stats = useStats()
-  const trips = useTrips({ limit: 2000 })
+  const [year, setYear] = useState<number | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
-  const byYear = useMemo(() => {
-    const map = new Map<number, { days: number; distance: number }>()
+  const years = useMemo(() => {
+    const counts = new Map<number, number>()
     for (const trip of trips.data ?? []) {
-      const y = Number(trip.local_date.slice(0, 4))
-      const entry = map.get(y) ?? { days: 0, distance: 0 }
-      entry.days += 1
-      entry.distance += trip.stats.distance_total_m ?? 0
-      map.set(y, entry)
+      const key = Number(trip.local_date.slice(0, 4))
+      counts.set(key, (counts.get(key) ?? 0) + 1)
     }
-    return [...map.entries()].sort((a, b) => b[0] - a[0])
+    return [...counts.entries()].sort((a, b) => b[0] - a[0])
   }, [trips.data])
 
-  const months = useMemo(() => {
-    if (year === null) return []
-    const map = new Map<number, number>()
-    for (const trip of trips.data ?? []) {
-      if (Number(trip.local_date.slice(0, 4)) !== year) continue
-      const m = Number(trip.local_date.slice(5, 7))
-      map.set(m, (map.get(m) ?? 0) + 1)
+  const activeYear = year ?? years[0]?.[0] ?? new Date().getUTCFullYear()
+
+  const monthBars = useMemo(() => {
+    const bars = new Array(12).fill(0)
+    for (const entry of stats.data?.activity ?? []) {
+      if (Number(entry.day.slice(0, 4)) !== activeYear) continue
+      const month = Number(entry.day.slice(5, 7)) - 1
+      bars[month] += entry.places + (entry.distance_m > 0 ? 1 : 0)
     }
-    return [...map.entries()].sort((a, b) => a[0] - b[0])
-  }, [trips.data, year])
+    return bars
+  }, [stats.data, activeYear])
 
-  const days = useMemo(
-    () =>
-      (trips.data ?? []).filter((trip) => {
-        if (year !== null && Number(trip.local_date.slice(0, 4)) !== year) return false
-        if (month !== null && Number(trip.local_date.slice(5, 7)) !== month) return false
-        return true
-      }),
-    [trips.data, year, month],
-  )
+  const months = useMemo(() => {
+    const grouped = new Map<string, typeof trips.data>()
+    for (const trip of trips.data ?? []) {
+      if (Number(trip.local_date.slice(0, 4)) !== activeYear) continue
+      const key = trip.local_date.slice(0, 7)
+      grouped.set(key, [...(grouped.get(key) ?? []), trip])
+    }
+    return [...grouped.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1))
+  }, [trips.data, activeYear])
 
-  const s = stats.data
+  const peak = Math.max(1, ...monthBars)
+  const yearCount = years.find(([value]) => value === activeYear)?.[1] ?? 0
 
   return (
     <div className="page">
-      <h1>{t.timeline.title}</h1>
-
-      {s && (
-        <div className="card">
-          <div className="row row--wrap">
-            <span className="pill">
-              {t.stats.trips} {s.trip_count}
-            </span>
-            <span className="pill">
-              {t.stats.distance} {formatKm(s.distance_total_m)}
-            </span>
-            <span className="pill">
-              {t.stats.countries} {s.countries}
-            </span>
-            <span className="pill">
-              {t.stats.cities} {s.cities}
-            </span>
-            <span className="pill">
-              {t.stats.places} {s.place_count}
-            </span>
-            <span className="pill">
-              {t.stats.photos} {s.photos.total}
-            </span>
-          </div>
-
-          {/* The honest footnotes. A total that hides what it excludes is a lie. */}
-          <div className="stack" style={{ marginTop: 10 }}>
-            {s.unknown_distance_segments > 0 && (
-              <span className="faint">{t.stats.unknownDistance(s.unknown_distance_segments)}</span>
-            )}
-            {s.inferred_dwell_count > 0 && (
-              <span className="faint">{t.stats.inferredDwell(s.inferred_dwell_count)}</span>
-            )}
-            {s.photos.inferred_location > 0 && (
-              <span className="faint">{t.stats.inferredPhotos(s.photos.inferred_location)}</span>
-            )}
-            {s.photos.unlocated > 0 && (
-              <span className="faint">{t.stats.unlocatedPhotos(s.photos.unlocated)}</span>
-            )}
-            {s.countries === 0 && s.place_count > 0 && (
-              <span className="faint">{t.stats.geocodingOff}</span>
-            )}
-          </div>
-        </div>
-      )}
-
-      <div className="row row--wrap" style={{ marginBottom: 12 }}>
-        <button
-          className={year === null ? 'primary' : ''}
-          onClick={() => {
-            setYear(null)
-            setMonth(null)
-          }}
-        >
-          {t.filters.timeAll}
-        </button>
-        {byYear.map(([value, entry]) => (
-          <button
-            key={value}
-            className={year === value ? 'primary' : ''}
-            onClick={() => {
-              setYear(value)
-              setMonth(null)
-            }}
-          >
-            {value}
-            <span className="faint"> · {entry.days}d</span>
-          </button>
-        ))}
-      </div>
-
-      {year !== null && (
-        <div className="row row--wrap" style={{ marginBottom: 12 }}>
-          <button className={month === null ? 'primary' : ''} onClick={() => setMonth(null)}>
-            {t.filters.timeAll}
-          </button>
-          {months.map(([value, count]) => (
+      <div className="split">
+        <aside className="split__aside split__aside--years">
+          {years.map(([value, count]) => (
             <button
               key={value}
-              className={month === value ? 'primary' : ''}
-              onClick={() => setMonth(value)}
+              className="year-item"
+              aria-current={value === activeYear}
+              onClick={() => setYear(value)}
             >
-              {value} {t.timeline.month}
-              <span className="faint"> · {count}</span>
+              <span className="year-item__year">{value}</span>
+              <span className="num faint" style={{ fontSize: 11 }}>
+                {count}
+              </span>
             </button>
           ))}
-        </div>
-      )}
+        </aside>
 
-      {days.length === 0 && <p className="faint">{t.timeline.noData}</p>}
+        <div className="split__main">
+          <div className="page__title">
+            <span
+              style={{
+                fontFamily: 'var(--font-heading)',
+                fontSize: 52,
+                lineHeight: 0.9,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {activeYear}
+            </span>
+            <span className="muted" style={{ fontSize: 13, paddingBottom: 8 }}>
+              {yearCount} {t.timeline.trips}
+            </span>
+          </div>
 
-      <table>
-        <tbody>
-          {days.map((trip) => (
-            <tr key={trip.id}>
-              <td className="faint">{trip.local_date}</td>
-              <td>
+          <div className="row" style={{ alignItems: 'flex-end', height: 44, margin: '18px 0 4px', gap: 6 }}>
+            {monthBars.map((value, index) => (
+              <div
+                key={index}
+                style={{
+                  flex: 1,
+                  height: `${Math.max(4, (value / peak) * 100)}%`,
+                  background: `color-mix(in srgb, var(--color-accent) ${Math.round(
+                    30 + (value / peak) * 70,
+                  )}%, transparent)`,
+                }}
+              />
+            ))}
+          </div>
+          <div className="row faint" style={{ gap: 6, fontSize: 10, marginBottom: 24 }}>
+            {monthBars.map((_, index) => (
+              <div key={index} style={{ flex: 1, textAlign: 'center' }}>
+                {t.timeline.monthLabel(index + 1)}
+              </div>
+            ))}
+          </div>
+
+          {months.map(([key, list]) => {
+            const isOpen = !collapsed.has(key)
+            return (
+              <section key={key} style={{ marginBottom: 14 }}>
                 <button
-                  className="ghost"
-                  style={{ textAlign: 'left' }}
-                  onClick={() => navigate({ name: 'trip', id: trip.id })}
+                  className="row"
+                  style={{
+                    all: 'unset',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    width: '100%',
+                    padding: '7px 0',
+                    borderBottom: '1px solid var(--color-divider)',
+                    gap: 10,
+                  }}
+                  onClick={() =>
+                    setCollapsed((current) => {
+                      const next = new Set(current)
+                      if (next.has(key)) next.delete(key)
+                      else next.add(key)
+                      return next
+                    })
+                  }
                 >
-                  {trip.title}
+                  <span className="muted" style={{ width: 12 }}>
+                    {isOpen ? '▾' : '▸'}
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-heading)', fontSize: 22 }}>
+                    {t.timeline.monthLabel(Number(key.slice(5, 7)))}
+                  </span>
+                  <span className="num muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
+                    {(list ?? []).length} {t.timeline.trips}
+                  </span>
                 </button>
-              </td>
-              <td>{formatKm(trip.stats.distance_total_m)}</td>
-              <td className="faint">
-                {trip.stats.place_count ?? 0} / {trip.stats.photo_count ?? 0}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                {isOpen && (
+                  <div className="grid grid--wide" style={{ paddingTop: 12 }}>
+                    {(list ?? []).map((trip) => (
+                      <TripCard key={trip.id} trip={trip} />
+                    ))}
+                  </div>
+                )}
+              </section>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }

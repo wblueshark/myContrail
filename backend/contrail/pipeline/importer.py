@@ -27,7 +27,7 @@ import os
 from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -56,6 +56,9 @@ log = logging.getLogger(__name__)
 
 BATCH_SIZE = 5_000
 PHOTO_PROGRESS_EVERY = 25
+# The report links to trips that kept their own group. A decade-wide import can
+# touch thousands; the list is for a "see those N" link, not a data dump.
+UPDATED_TRIP_ID_CAP = 200
 
 ProgressFn = Callable[[str, int, int | None], None]
 
@@ -80,6 +83,16 @@ class ImportReport:
     tracks: int = 0
     time_span: dict[str, str | None] = field(default_factory=dict)
     already_imported: bool = False
+    # Days whose events span more than one zone. Reported because the trip was
+    # deliberately NOT split at the border, and the report has to say so.
+    tz_crossings: int = 0
+    # {"detected": bool, "reason": str | None, ...} - whatever refresh_commute
+    # concluded for this import. The wizard shows it as a sentence.
+    commute: dict = field(default_factory=dict)
+    # Trips that already existed and kept their group. Capped: a decade-wide
+    # import can touch thousands, and the report only needs enough to link to.
+    updated_trip_ids: list[str] = field(default_factory=list)
+    updated_trip_ids_truncated: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -97,6 +110,10 @@ class ImportReport:
             "tracks": self.tracks,
             "time_span": self.time_span,
             "already_imported": self.already_imported,
+            "tz_crossings": self.tz_crossings,
+            "commute": self.commute,
+            "updated_trip_ids": self.updated_trip_ids,
+            "updated_trip_ids_truncated": self.updated_trip_ids_truncated,
         }
 
 
@@ -214,13 +231,15 @@ async def import_track_file(
     await session.flush()
 
     if earliest and latest:
-        progress("deriving", report.points, None)
+        progress("cluster", 0, report.points)
         result = await rederive_window(session, user_id, earliest, latest)
         report.trips_created = result["trips_created"]
         report.trips_updated = result["trips_updated"]
         report.places = result["places"]
         report.tracks = result["tracks"]
         await _apply_group_and_tags(session, user_id, earliest, latest, options, report)
+        await _summarise_window(session, user_id, earliest, latest, report)
+        progress("cluster", report.points, report.points)
 
     progress("done", report.points, report.points)
     return report
@@ -262,33 +281,73 @@ async def _flush_points(session: AsyncSession, batch: list[dict]) -> int:
 
 
 # ── photo directories ─────────────────────────────────────
-def _scan_images(directory: Path) -> Iterable[Path]:
-    for entry in sorted(directory.rglob("*")):
+def _scan_images(directory: Path, include_subdirs: bool = True) -> Iterable[Path]:
+    entries = directory.rglob("*") if include_subdirs else directory.glob("*")
+    for entry in sorted(entries):
         if entry.is_file() and entry.suffix.lower() in IMAGE_SUFFIXES:
             yield entry
 
 
-def prescan_directory(directory: Path, sample_size: int = 40) -> dict:
+# JPEG and HEIC dominate real libraries; the rest are reported under "other" so
+# the counts still add up to parsable_count.
+_FORMAT_GROUPS = {
+    ".jpg": "jpeg",
+    ".jpeg": "jpeg",
+    ".heic": "heic",
+    ".heif": "heic",
+    ".png": "png",
+    ".tif": "tiff",
+    ".tiff": "tiff",
+    ".dng": "dng",
+}
+
+
+def prescan_directory(
+    directory: Path, sample_size: int = 40, include_subdirs: bool = True
+) -> dict:
     """Count files and sample GPS coverage before committing to an import.
 
     The user picked this directory themselves and could have picked "/". The
     file count and time estimate are what stop that becoming a surprise.
+
+    The GPS figure is a SAMPLE, not a census: reading every header of a 120k
+    photo library would cost most of the import it is supposed to precede.
+    `gps_estimated` and `sampled` travel with it so the UI can say so instead of
+    printing an estimate as though it were counted.
     """
-    files = list(_scan_images(directory))
+    files = list(_scan_images(directory, include_subdirs))
+    by_format: dict[str, int] = {}
+    for path in files:
+        key = _FORMAT_GROUPS.get(path.suffix.lower(), "other")
+        by_format[key] = by_format.get(key, 0) + 1
+
     sample = files[:: max(1, len(files) // sample_size)][:sample_size] if files else []
     with_gps = 0
+    readable = 0
     earliest = latest = None
     for path in sample:
         meta = extract_photo_meta(path)
+        readable += 1
         if meta.has_position:
             with_gps += 1
         if meta.ts_utc:
             earliest = meta.ts_utc if earliest is None else min(earliest, meta.ts_utc)
             latest = meta.ts_utc if latest is None else max(latest, meta.ts_utc)
+
+    gps_ratio = (with_gps / len(sample)) if sample else 0.0
     return {
         "file_count": len(files),
+        # Every scanned file carries a supported suffix, so the parsable count
+        # is the file count until a header actually fails to read.
+        "parsable_count": len(files),
+        "by_format": by_format,
         "sampled": len(sample),
-        "gps_ratio": (with_gps / len(sample)) if sample else 0.0,
+        "sample_readable": readable,
+        "gps_ratio": gps_ratio,
+        "gps_estimated": True,
+        "gps_count_estimate": round(len(files) * gps_ratio),
+        "no_gps_count_estimate": len(files) - round(len(files) * gps_ratio),
+        "include_subdirs": include_subdirs,
         "time_span": {
             "start": earliest.isoformat() if earliest else None,
             "end": latest.isoformat() if latest else None,
@@ -298,11 +357,13 @@ def prescan_directory(directory: Path, sample_size: int = 40) -> dict:
     }
 
 
-def _process_photo(path_str: str) -> dict:
+def _process_photo(path_str: str, want_thumbnails: bool = True) -> dict:
     """Runs in a worker process: EXIF + thumbnails, the CPU-heavy part."""
     path = Path(path_str)
     meta: PhotoMeta = extract_photo_meta(path)
-    rendered = render_thumbnails(path)
+    # Decoding is the expensive half. When the user turned thumbnails off there
+    # is nothing to decode for, so skip it rather than render and discard.
+    rendered = render_thumbnails(path) if want_thumbnails else None
     return {
         "path": path_str,
         "meta": meta,
@@ -331,7 +392,14 @@ async def import_photo_directory(
     settings = get_settings()
     report = ImportReport(kind="photo", display_name=display_name)
 
-    files = list(_scan_images(directory))
+    include_subdirs = bool(options.get("include_subdirs", True))
+    want_thumbnails = bool(options.get("generate_thumbnails", True))
+    skip_duplicates = bool(options.get("skip_duplicates", True))
+    infer_missing = bool(options.get("infer_missing_gps", True))
+    infer_tolerance = int(options.get("infer_tolerance_s") or settings.photo_infer_tolerance_s)
+    range_start, range_end = _date_bounds(options.get("date_range"))
+
+    files = list(_scan_images(directory, include_subdirs))
     progress("scanning", 0, len(files))
     if not files:
         return report
@@ -355,10 +423,13 @@ async def import_photo_directory(
     member_digest = hashlib.sha256()
     unlocated: list[dict] = []
 
+    thumbs_done = 0
     workers = max(1, min(8, (os.cpu_count() or 4) - 1))
     loop = asyncio.get_running_loop()
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        pending = [loop.run_in_executor(pool, _process_photo, str(p)) for p in files]
+        pending = [
+            loop.run_in_executor(pool, _process_photo, str(p), want_thumbnails) for p in files
+        ]
         for index, future in enumerate(asyncio.as_completed(pending), start=1):
             try:
                 item = await future
@@ -368,6 +439,10 @@ async def import_photo_directory(
 
             meta: PhotoMeta = item["meta"]
             member_digest.update(item["content_hash"])
+
+            if not _within_range(meta, range_start, range_end):
+                report.skipped["out_of_range"] = report.skipped.get("out_of_range", 0) + 1
+                continue
 
             duplicate = (
                 await session.execute(
@@ -380,12 +455,21 @@ async def import_photo_directory(
             if duplicate is not None:
                 # The same photo can sit in two directories. Link it to this
                 # source as well, so undoing one import keeps the other's copy.
+                #
+                # A second row is impossible either way - photo is unique on
+                # (user_id, content_hash). What `skip_duplicates=false` buys is
+                # a rebuild: the duplicate's timestamp still widens the window
+                # that gets re-derived, so a day whose derived layer was lost
+                # comes back without deleting and re-importing the source.
                 report.duplicates += 1
                 await session.execute(
                     pg_insert(PhotoSource)
                     .values(photo_id=duplicate, source_file_id=source.id)
                     .on_conflict_do_nothing()
                 )
+                if not skip_duplicates and meta.ts_utc:
+                    earliest = meta.ts_utc if earliest is None else min(earliest, meta.ts_utc)
+                    latest = meta.ts_utc if latest is None else max(latest, meta.ts_utc)
                 continue
 
             thumb_key = micro_key = None
@@ -396,6 +480,7 @@ async def import_photo_directory(
                 micro_key = storage.put(
                     "micro", sharded_name(item["content_hash"], ".webp"), item["micro"]
                 )
+                thumbs_done += 1
 
             photo = Photo(
                 user_id=user_id,
@@ -436,7 +521,11 @@ async def import_photo_directory(
                 unlocated.append({"id": str(photo.id), "ts": meta.ts_utc})
 
             if index % PHOTO_PROGRESS_EVERY == 0:
-                progress("photos", index, len(files))
+                # Two counters, reported separately: the wizard draws one bar
+                # per phase and they do not advance together (a photo can be
+                # read but produce no thumbnail).
+                progress("read_exif", index, len(files))
+                progress("thumbnails", thumbs_done, len(files))
 
     source.content_hash = member_digest.digest()
     source.status = "done"
@@ -453,9 +542,9 @@ async def import_photo_directory(
     await session.flush()
 
     if earliest and latest:
-        progress("deriving", report.photos, len(files))
-        if unlocated:
-            await _infer_photo_positions(session, user_id, unlocated, settings)
+        progress("cluster", 0, report.photos)
+        if unlocated and infer_missing:
+            await _infer_photo_positions(session, user_id, unlocated, infer_tolerance)
         result = await rederive_window(session, user_id, earliest, latest)
         report.trips_created = result["trips_created"]
         report.trips_updated = result["trips_updated"]
@@ -463,19 +552,24 @@ async def import_photo_directory(
         report.tracks = result["tracks"]
         await _link_photos_to_places(session, user_id, earliest, latest, settings)
         await _apply_group_and_tags(session, user_id, earliest, latest, options, report)
+        await _summarise_window(session, user_id, earliest, latest, report)
+        progress("cluster", report.photos, report.photos)
 
     progress("done", report.photos, len(files))
     return report
 
 
 async def _infer_photo_positions(
-    session: AsyncSession, user_id: UUID, unlocated: list[dict], settings
+    session: AsyncSession, user_id: UUID, unlocated: list[dict], tolerance: int
 ) -> None:
-    """Interpolate positions for photos with no GPS, marking them inferred."""
+    """Interpolate positions for photos with no GPS, marking them inferred.
+
+    The tolerance is per import: the wizard offers it next to the checkbox, and
+    a hiking batch wants a tighter window than a road-trip one.
+    """
     from contrail.pipeline.photos import infer_photo_location
     from contrail.pipeline.types import Pt
 
-    tolerance = settings.photo_infer_tolerance_s
     for entry in unlocated:
         rows = await session.execute(
             text(
@@ -586,6 +680,79 @@ async def _link_photos_to_places(
 
 
 # ── group / tag assignment ────────────────────────────────
+def _date_bounds(date_range: dict | None) -> tuple[date | None, date | None]:
+    """The wizard's optional "only import this date range", as local dates."""
+    if not date_range:
+        return None, None
+
+    def parse(value) -> date | None:
+        if value is None or value == "":
+            return None
+        return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+    return parse(date_range.get("start")), parse(date_range.get("end"))
+
+
+def _within_range(meta: PhotoMeta, start: date | None, end: date | None) -> bool:
+    """Compare against the photo's LOCAL day.
+
+    The user typed "2024-05-01 to 2024-05-08" meaning the days they lived, not a
+    UTC window: a 23:30 photo in Tokyo belongs to that local day, not the one
+    UTC would file it under.
+    """
+    if start is None and end is None:
+        return True
+    stamp = meta.taken_at_local or meta.ts_utc
+    if stamp is None:
+        return True  # no timestamp to judge by; never silently dropped
+    day = stamp.date()
+    if start and day < start:
+        return False
+    return not (end and day > end)
+
+
+async def _summarise_window(
+    session: AsyncSession,
+    user_id: UUID,
+    start: datetime,
+    end: datetime,
+    report: ImportReport,
+) -> None:
+    """How many days in this window cross a time zone.
+
+    Computed here rather than left for the frontend to infer: the report claims
+    "6 timezone crossings, trips kept whole", and a claim like that has to come
+    from the data. The commute conclusion is filled in by the caller, after the
+    post-import refresh has actually run.
+    """
+    report.tz_crossings = int(
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT count(*) FROM trip t
+                     WHERE t.user_id = :uid AND t.start_utc <= :end AND t.end_utc >= :start
+                       AND EXISTS (SELECT 1 FROM track tr
+                                    WHERE tr.trip_id = t.id AND tr.crosses_tz)
+                    """
+                ),
+                {"uid": str(user_id), "start": start, "end": end},
+            )
+        ).scalar_one()
+    )
+
+
+def commute_summary(outcome: dict) -> dict:
+    """Turn a refresh_commute result into the report's commute conclusion."""
+    return {
+        "detected": bool(outcome.get("ran")) and bool(outcome.get("ods")),
+        "reason": outcome.get("reason"),
+        "workdays": outcome.get("workdays"),
+        "required_workdays": outcome.get("required_workdays"),
+        "ods": outcome.get("ods", 0),
+    }
+
+
 async def _apply_group_and_tags(
     session: AsyncSession,
     user_id: UUID,
@@ -614,16 +781,24 @@ async def _apply_group_and_tags(
         )
     ).all()
 
+    kept: list[str] = []
     for trip_id, existing_group in trip_ids:
         if group_id and existing_group is None:
             await session.execute(
                 text("UPDATE trip SET group_id = :g WHERE id = :id"),
                 {"g": group_id, "id": trip_id},
             )
+        elif group_id:
+            # Kept its own group. The report links to these so the user can see
+            # which days were left alone rather than wonder.
+            kept.append(str(trip_id))
         for tag_id in tag_ids:
             await session.execute(
                 pg_insert(TripTag).values(trip_id=trip_id, tag_id=tag_id).on_conflict_do_nothing()
             )
+
+    report.updated_trip_ids = kept[:UPDATED_TRIP_ID_CAP]
+    report.updated_trip_ids_truncated = len(kept) > UPDATED_TRIP_ID_CAP
 
 
 # ── undo ──────────────────────────────────────────────────

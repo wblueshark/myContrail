@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 TILE_SIZE = 512
 MAX_CONCURRENT_FETCHES = 4
 FETCH_TIMEOUT_S = 10
-STYLES = {"light": "light-v11", "dark": "dark-v11"}
+STYLES = {"light": "light-v11", "dark": "dark-v11", "terrain": "outdoors-v12"}
 ENDPOINT = "https://api.mapbox.com/styles/v1/mapbox/{style}/tiles/{size}/{z}/{x}/{y}{ratio}"
 
 
