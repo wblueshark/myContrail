@@ -11,7 +11,9 @@
 
 export const t = {
   app: {
-    name: 'Contrail',
+    // The wordmark, identical in all three locales: a product name is not
+    // copy, and translating half of it away would give the product two names.
+    name: 'Contrail · 凝迹',
     tagline: '把散落各处的位置数据汇成一条轨迹',
     noBackgroundLocation: '不申请定位权限 · 不常驻后台',
     loading: '加载中…',

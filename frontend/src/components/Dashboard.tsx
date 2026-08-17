@@ -107,7 +107,7 @@ export default function Dashboard({ zoom }: Props) {
           {(windowed.data?.photos.total ?? 0).toLocaleString()} {t.layers.photos}
         </span>
         <span className="tag tag-outline">{t.map.lod(lodLabel(zoom, t), Math.round(zoom))}</span>
-        <button className="btn btn-secondary btn-sm" onClick={() => setImportOpen(true)}>
+        <button className="btn btn-secondary" onClick={() => setImportOpen(true)}>
           + {t.nav.appendData}
         </button>
       </div>

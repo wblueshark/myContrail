@@ -101,9 +101,9 @@ export default function TripDetailPage({ tripId }: { tripId: string }) {
             {name}
           </span>
         ))}
-        <div className="row" style={{ marginLeft: 'auto', gap: 6 }}>
+        <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
           <button
-            className="btn btn-secondary"
+            className="btn btn-secondary btn-lg"
             onClick={() => {
               setTimeRange(`${trip.local_date}T00:00:00Z`, `${trip.local_date}T23:59:59Z`)
               navigate({ name: 'map' })
@@ -112,7 +112,7 @@ export default function TripDetailPage({ tripId }: { tripId: string }) {
             {t.trips.map}
           </button>
           <button
-            className="btn btn-primary"
+            className="btn btn-primary btn-lg"
             onClick={() => {
               setExportTrips([trip.id])
               setExportOpen(true)
@@ -121,7 +121,7 @@ export default function TripDetailPage({ tripId }: { tripId: string }) {
             {t.trips.export} PNG
           </button>
           {/* Sharing is out of the MVP (02 section 9): offered, visibly off. */}
-          <button className="btn btn-secondary" disabled title={t.app.notInMvp}>
+          <button className="btn btn-secondary btn-lg" disabled title={t.app.notInMvp}>
             {t.trips.share}
           </button>
         </div>

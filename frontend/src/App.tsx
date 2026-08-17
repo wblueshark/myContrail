@@ -110,7 +110,7 @@ function TopBar() {
   return (
     <header className="topbar">
       <div className="topbar__brand">
-        <span className="topbar__name">CONTRAIL</span>
+        <span className="topbar__name">{t.app.name}</span>
         <span className="topbar__tagline">{t.app.tagline}</span>
       </div>
       <div className="topbar__divider" />

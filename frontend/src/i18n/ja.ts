@@ -4,7 +4,7 @@ import type { Copy } from './zh'
 
 export const ja: Copy = {
   app: {
-    name: 'Contrail',
+    name: 'Contrail · 凝迹',
     tagline: '散らばった位置データを一本の軌跡に',
     noBackgroundLocation: '位置情報の許可なし・常駐なし',
     loading: '読み込み中…',

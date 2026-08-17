@@ -213,6 +213,12 @@ input[type='range'] {
   font-size: 12px;
   padding: 4px 8px;
 }
+/* For an action group that sits beside a page title rather than inside a
+   panel, where the default button reads as an afterthought next to 36px type. */
+.btn-lg {
+  font-size: 16px;
+  padding: var(--space-3) calc(var(--space-4) * 1.15);
+}
 
 /* — forms — */
 .field > label {

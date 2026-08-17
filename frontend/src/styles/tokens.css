@@ -71,7 +71,7 @@
   --panel-groups: 300px;
   --panel-years: 120px;
   --drawer: 396px;
-  --dashboard: 44px;
+  --dashboard: 54px;
   --histogram: 96px;
 }
 
@@ -102,10 +102,14 @@
   --shadow-lg: 0 14px 40px rgba(0, 0, 0, 0.6);
 }
 
+/* Japanese is the only locale that overrides the fallback, and it has to: a
+   Japanese page falling through to a Chinese face is visibly wrong.
+ *
+ * English does not override it. `--font-cjk` is a fallback, not a load - naming
+ * a Chinese face there fetches nothing - and overriding it only changed which
+ * face served the characters Barlow lacks (the middle dot, the arrows, the
+ * multiplication sign), so the same English sentence was set differently
+ * depending on the interface language. */
 html[lang='ja'] {
   --font-cjk: 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', sans-serif;
-}
-
-html[lang='en'] {
-  --font-cjk: system-ui;
 }

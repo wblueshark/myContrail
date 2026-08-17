@@ -4,7 +4,7 @@ import type { Copy } from './zh'
 
 export const en: Copy = {
   app: {
-    name: 'Contrail',
+    name: 'Contrail · 凝迹',
     tagline: 'Scattered location data, one trail',
     noBackgroundLocation: 'No location permission · never in background',
     loading: 'Loading…',
