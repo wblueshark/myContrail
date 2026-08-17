@@ -74,8 +74,10 @@ Two deliberate exceptions, both because the CJK text is *input data*, not prose:
 
 - `backend/scripts/verify_env.py` — `CJK_HAYSTACK` / `CJK_NEEDLE` are the
   fixtures for the CJK search check.
-- `frontend/src/i18n/zh.ts` and `ja.ts` — the modules holding display strings.
-  Components reference English keys; no CJK literal appears in a component.
+- `frontend/src/i18n/` — the modules holding display strings. `en.ts` is in
+  scope too: the wordmark `Contrail · 凝迹` is the product's name in every
+  locale, not a string to translate away. Components reference English keys; no
+  CJK literal appears in a component.
 
 The three locale modules are one shape: `en.ts` and `ja.ts` are typed
 `Record<keyof typeof zh, string>`, so a missing key is a compile error rather
