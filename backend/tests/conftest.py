@@ -60,7 +60,11 @@ def pg_conn(database_url):
         pytest.skip(f"database unreachable: {type(exc).__name__}")
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("SELECT to_regproc('contrail_fence_remove') IS NOT NULL")
+        # Counted rather than resolved by name: to_regproc() returns NULL for an
+        # AMBIGUOUS name, and the fence functions are overloaded (per-fence forms
+        # were added in 0002). Probing with to_regproc would silently skip this
+        # entire file - the one file whose docstring says skipping is not a pass.
+        cur.execute("SELECT count(*) > 0 FROM pg_proc WHERE proname = 'contrail_fence_remove'")
         if not cur.fetchone()[0]:
             pytest.skip("fence functions not installed; run alembic upgrade head")
     yield conn

@@ -274,3 +274,86 @@ def _segments(wkt: str) -> list[list[tuple[float, float]]]:
 
 def _coords(wkt: str) -> list[tuple[float, float]]:
     return [point for segment in _segments(wkt) for point in segment]
+
+
+# ── per-fence policies and city coarsening (CR-005) ───────────────────────
+@pytest.fixture
+def two_fenced_user(pg_conn):
+    """A user with two fences far enough apart to be told apart in a result."""
+    user_id = uuid.uuid4()
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO app_user (id, email, display_name) VALUES (%s, %s, 'two-fence-test')",
+            (user_id, f"two-fence-{user_id}@test.invalid"),
+        )
+        for label, lon in (("home", FENCE_LON), ("work", FENCE_LON + 0.30)):
+            cur.execute(
+                """
+                INSERT INTO geofence (user_id, kind, label, center, radius_m, jitter_seed)
+                VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, 42)
+                RETURNING id
+                """,
+                (user_id, label, label, lon, FENCE_LAT, RADIUS_M),
+            )
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, kind::text FROM geofence WHERE user_id = %s ORDER BY kind", (user_id,)
+        )
+        fences = {kind: fence_id for fence_id, kind in cur.fetchall()}
+    yield user_id, fences
+    with pg_conn.cursor() as cur:
+        cur.execute("DELETE FROM app_user WHERE id = %s", (user_id,))
+
+
+def test_a_fence_subset_clips_only_that_fence(pg_conn, two_fenced_user):
+    """The export dialog offers "blur home, remove work", so a policy has to be
+    applicable to ONE fence. Passing only the home id must leave the work fence
+    untouched - otherwise per-fence choices are a fiction."""
+    user_id, fences = two_fenced_user
+    line = "SRID=4326;LINESTRING(" + ", ".join(
+        f"{FENCE_LON + i * 0.01} {FENCE_LAT}" for i in range(0, 40)
+    ) + ")"
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT ST_AsText(contrail_fence_remove(%s::geometry, %s, ARRAY[%s]::uuid[]))",
+            (line, user_id, fences["home"]),
+        )
+        wkt = cur.fetchone()[0]
+        assert wkt is not None
+
+        near_home = near_work = 0
+        for lon, lat in _coords(wkt):
+            if _distance_from_fence(cur, lon, lat) < RADIUS_M - 1.0:
+                near_home += 1
+            cur.execute(
+                "SELECT ST_DistanceSphere(ST_SetSRID(ST_MakePoint(%s, %s), 4326),"
+                " ST_SetSRID(ST_MakePoint(%s, %s), 4326))",
+                (lon, lat, FENCE_LON + 0.30, FENCE_LAT),
+            )
+            if cur.fetchone()[0] < RADIUS_M:
+                near_work += 1
+
+    assert near_home == 0, "the selected fence did not clip its own area"
+    assert near_work > 0, "an unselected fence was clipped anyway"
+
+
+def test_city_coarsening_snaps_to_a_grid_and_is_deterministic(pg_conn):
+    """Coarsening is grid snapping, never noise: noise averages out over several
+    exports of the same trip, so two runs must be byte-identical."""
+    point = f"SRID=4326;POINT({FENCE_LON} {FENCE_LAT})"
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT ST_AsText(contrail_coarsen_city(%s::geometry))", (point,))
+        first = cur.fetchone()[0]
+        cur.execute("SELECT ST_AsText(contrail_coarsen_city(%s::geometry))", (point,))
+        second = cur.fetchone()[0]
+        assert first == second
+
+        cur.execute(
+            "SELECT ST_DistanceSphere(contrail_coarsen_city(%s::geometry), %s::geometry)",
+            (point, point),
+        )
+        moved = cur.fetchone()[0]
+
+    # It has to actually coarsen: a city-scale grid moves a point by kilometres,
+    # not metres.
+    assert moved > 100, f"coarsening moved the point only {moved:.0f} m"
