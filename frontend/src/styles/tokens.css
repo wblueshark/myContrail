@@ -1,0 +1,115 @@
+/* Design tokens, ported from the Industry design system bundle
+   (the styles.css under Sample/Design_v2/project/_ds/, industry theme).
+
+   Two deliberate differences from the bundle:
+     * the webfont @import is gone. Fonts are vendored through @fontsource, so a
+       running Contrail makes no request to any third party. The list of
+       external requests this product makes is documented (01 section 8).
+     * the ground palette belongs to the app (dark by default) and is applied
+       over the bundle ramps, which are unchanged. */
+
+:root {
+  /* Tonal ramps - generated in OKLCH on one shared lightness scale, so the
+     same step of any role carries the same visual weight. */
+  --color-neutral-100: #f5f5f8;
+  --color-neutral-200: #e7e7ea;
+  --color-neutral-300: #d4d4d7;
+  --color-neutral-400: #b7b7ba;
+  --color-neutral-500: #98989b;
+  --color-neutral-600: #7a7a7d;
+  --color-neutral-700: #5d5d60;
+  --color-neutral-800: #424244;
+  --color-neutral-900: #2b2b2d;
+
+  --color-accent-100: #eef6ff;
+  --color-accent-200: #d6ebff;
+  --color-accent-300: #b5d9fd;
+  --color-accent-400: #94bce3;
+  --color-accent-500: #749dc4;
+  --color-accent-600: #597ea3;
+  --color-accent-700: #416180;
+  --color-accent-800: #2c455d;
+  --color-accent-900: #1d2d3d;
+
+  --font-heading: 'Barlow Condensed', var(--font-cjk), system-ui, sans-serif;
+  --font-heading-weight: 600;
+  --font-body: 'Barlow', var(--font-cjk), system-ui, sans-serif;
+  /* Barlow carries no CJK glyphs, so the fallback is per language: a Japanese
+     page must not fall through to a Chinese face and vice versa. */
+  --font-cjk: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+
+  --space-1: 3.4px;
+  --space-2: 6.8px;
+  --space-3: 10.2px;
+  --space-4: 13.6px;
+  --space-6: 20.4px;
+  --space-8: 27.2px;
+
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 7px;
+
+  /* Transport modes. `run` moved off #d1495b in design v2: it collided with the
+     danger/selection colour, so a running track and a selected place looked the
+     same on the map. */
+  --mode-walk: #8fb8dd;
+  --mode-run: #d9663c;
+  --mode-bike: #8f6fd1;
+  --mode-car: #4fa08f;
+  --mode-transit: #d9a13c;
+  --mode-flight: #c05f9c;
+  --mode-unknown: var(--color-neutral-500);
+
+  --color-danger: #d1495b;
+
+  /* Shell metrics. Panels keep a fixed width and the main area flexes; the
+     collapse thresholds live in styles.css. */
+  --rail: 78px;
+  --topbar: 52px;
+  --panel-filters: 262px;
+  --panel-detail: 298px;
+  --panel-groups: 300px;
+  --panel-years: 120px;
+  --drawer: 396px;
+  --dashboard: 54px;
+  --histogram: 96px;
+}
+
+/* Light is the base theme; dark overrides it. Both are explicit - a token that
+   only exists inside one block is how a half-painted theme happens. */
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #eef1f4;
+  --color-surface: #e3e8ed;
+  --color-text: #16222e;
+  --color-divider: color-mix(in srgb, #16222e 16%, transparent);
+  --color-accent: #3f648c;
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2b2b2d 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2b2b2d 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2b2b2d 22%, transparent);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --color-bg: #08192a;
+  --color-surface: #0e2438;
+  --color-text: #dfe8f1;
+  --color-divider: color-mix(in srgb, #dfe8f1 18%, transparent);
+  --color-accent: #7ba6cf;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 3px 10px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 14px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* Japanese is the only locale that overrides the fallback, and it has to: a
+   Japanese page falling through to a Chinese face is visibly wrong.
+ *
+ * English does not override it. `--font-cjk` is a fallback, not a load - naming
+ * a Chinese face there fetches nothing - and overriding it only changed which
+ * face served the characters Barlow lacks (the middle dot, the arrows, the
+ * multiplication sign), so the same English sentence was set differently
+ * depending on the interface language. */
+html[lang='ja'] {
+  --font-cjk: 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', sans-serif;
+}

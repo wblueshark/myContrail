@@ -6,11 +6,21 @@ and the schema must reject one rather than ignore it.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from contrail.schemas import ExportRequest, ImportRequest, PrescanRequest
+from contrail.schemas import (
+    ExportRequest,
+    GroupOut,
+    ImportRequest,
+    OverviewRow,
+    PrescanRequest,
+    SettingsIn,
+    TagOut,
+)
 from contrail.security import reject_path_fields
 
 
@@ -102,3 +112,94 @@ def test_log_redaction_never_emits_a_usable_position():
     redacted = redact_position(35.681236, 139.767125)
     assert "35.68" not in redacted and "139.76" not in redacted
     assert redacted.startswith("gh4:") and len(redacted) == 8
+
+
+# ── redesign contracts (CR-004 / CR-005 / CR-006 / CR-007 / CR-008) ────────
+def test_import_options_accept_the_full_wizard_set():
+    """Every switch on step 3 of the wizard must survive validation."""
+    request = ImportRequest(
+        source_ref="tok",
+        kind="photo",
+        options={
+            "include_subdirs": False,
+            "infer_missing_gps": True,
+            "infer_tolerance_s": 1800,
+            "generate_thumbnails": False,
+            "skip_duplicates": False,
+            "date_range": {"start": "2024-05-01", "end": "2024-05-08"},
+        },
+    )
+    assert request.options.include_subdirs is False
+    assert request.options.infer_tolerance_s == 1800
+    assert request.options.date_range is not None
+
+
+def test_import_options_reject_a_path_smuggled_into_the_nested_object():
+    """The nested object is `extra="forbid"` too - otherwise `options` would be
+    the one place a path could ride along unnoticed."""
+    with pytest.raises(ValidationError):
+        ImportRequest(source_ref="tok", options={"path": "/Users/someone/Pictures"})
+
+
+def test_reject_path_fields_walks_nested_bodies():
+    with pytest.raises(HTTPException) as caught:
+        reject_path_fields({"source_ref": "tok", "options": {"scan_path": "/etc"}})
+    assert caught.value.status_code == 400
+
+
+def test_prescan_carries_the_subfolder_choice():
+    assert PrescanRequest(pick_token="tok").include_subdirs is True
+    assert PrescanRequest(pick_token="tok", include_subdirs=False).include_subdirs is False
+
+
+def test_export_request_accepts_a_per_fence_policy_map():
+    """"Blur home, remove work" has to be expressible - one global choice cannot
+    say it."""
+    home = uuid.uuid4()
+    work = uuid.uuid4()
+    request = ExportRequest(fence_actions={home: "blur", work: "remove"})
+    assert request.fence_actions == {home: "blur", work: "remove"}
+    with pytest.raises(ValidationError):
+        ExportRequest(fence_actions={home: "ignore"})
+
+
+def test_export_request_defaults_keep_the_credit_and_the_full_layer_set():
+    request = ExportRequest()
+    assert request.basemap == "light"
+    assert request.coarsen_to_city is False
+    assert (request.contents.tracks, request.contents.places, request.contents.photos) == (
+        True,
+        True,
+        True,
+    )
+    # Place labels are the one layer off by default: they crowd a small export.
+    assert request.contents.labels is False
+
+
+def test_settings_schema_bounds_the_new_tunables():
+    assert SettingsIn(commute_min_repeats=12).commute_min_repeats == 12
+    assert SettingsIn(display_local_time=False).display_local_time is False
+    for bad in (2, 61):
+        with pytest.raises(ValidationError):
+            SettingsIn(commute_min_repeats=bad)
+
+
+def test_settings_schema_refuses_a_mapbox_token():
+    """The token lives in .env. Accepting one here would put a secret in the
+    database and, sooner or later, in a log line."""
+    with pytest.raises(ValidationError):
+        SettingsIn(mapbox_token="pk.eyJ1Ijoi")
+
+
+def test_overview_row_keeps_the_unnamed_bucket():
+    """A place with no geocoded name is reported under a null key, never
+    dropped: dropping it makes the rows disagree with the header totals."""
+    row = OverviewRow(key=None, label=None, trip_count=3)
+    assert row.key is None and row.trip_count == 3
+
+
+def test_group_and_tag_outputs_carry_both_counts():
+    group = GroupOut(id=uuid.uuid4(), name="Kyoto", kind="user", color=None)
+    assert (group.trip_count, group.place_count) == (0, 0)
+    tag = TagOut(id=uuid.uuid4(), name="photo", color=None, trip_count=2, place_count=5)
+    assert (tag.trip_count, tag.place_count) == (2, 5)

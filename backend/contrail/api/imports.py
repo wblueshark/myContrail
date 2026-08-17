@@ -78,10 +78,14 @@ async def prescan(request: Request, _user_id=Depends(current_user_id)) -> dict:
     payload = PrescanRequest(**raw)
 
     if payload.pick_token:
+        # peek, not consume: the wizard re-scans the same token when the user
+        # toggles "include subfolders", and the counts have to follow.
         directory = picker.peek(payload.pick_token)
         if directory is None:
             raise HTTPException(status_code=410, detail="pick token expired or already used")
-        result = await asyncio.to_thread(importer.prescan_directory, directory)
+        result = await asyncio.to_thread(
+            importer.prescan_directory, directory, 40, payload.include_subdirs
+        )
         result["display_name"] = picker.display_name(payload.pick_token)
         result["needs_confirmation"] = result["file_count"] > LARGE_DIRECTORY_THRESHOLD
         return result
@@ -141,6 +145,7 @@ async def create_import(
     options = {
         "group_id": str(payload.group_id) if payload.group_id else None,
         "tag_ids": [str(t) for t in payload.tag_ids],
+        **payload.options.model_dump(mode="json"),
     }
 
     if payload.kind == "photo":
@@ -155,7 +160,10 @@ async def create_import(
                 report = await importer.import_photo_directory(
                     session, user_id, directory, display, options, progress
                 )
-                await refresh.full_refresh(session, user_id)
+                # The commute conclusion belongs to the report, but only the
+                # refresh can produce it - so it is filled in after, not before.
+                outcome = await refresh.full_refresh(session, user_id)
+                report.commute = importer.commute_summary(outcome.get("commute", {}))
             return report.as_dict()
 
     else:
@@ -170,7 +178,8 @@ async def create_import(
                 report = await importer.import_track_file(
                     session, user_id, path, display, options, progress
                 )
-                await refresh.full_refresh(session, user_id)
+                outcome = await refresh.full_refresh(session, user_id)
+                report.commute = importer.commute_summary(outcome.get("commute", {}))
             return report.as_dict()
 
     TASKS.start(state, work)

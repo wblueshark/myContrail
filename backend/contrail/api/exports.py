@@ -99,22 +99,44 @@ async def fence_check(
     return await _fence_hits(session, user_id, payload.trip_ids, payload.place_ids)
 
 
-async def _guard(session: AsyncSession, user_id, payload: ExportRequest) -> str | None:
-    """Return the fence action to apply, or refuse the export."""
+def _refuse(check: FenceCheckResponse, reason: str):
+    return HTTPException(
+        status_code=422,
+        detail={
+            "error": reason,
+            "fences": [h.model_dump(mode="json") for h in check.fences],
+            "affected_places": check.affected_places,
+            "affected_tracks": check.affected_tracks,
+            "choices": ["blur", "remove"],
+        },
+    )
+
+
+async def _guard(
+    session: AsyncSession, user_id, payload: ExportRequest
+) -> str | dict[uuid.UUID, str] | None:
+    """Return the fence action to apply, or refuse the export.
+
+    Both shapes are refused the same way when they leave a hit fence undecided.
+    A per-fence dict that simply omits one is not "the rest default to blur" -
+    defaulting would answer a privacy question the user never answered.
+    """
     check = await _fence_hits(session, user_id, payload.trip_ids, payload.place_ids)
     if not check.intersects:
         return None
     if payload.fence_actions is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "the selection intersects a privacy fence; fence_actions is required",
-                "fences": [h.model_dump(mode="json") for h in check.fences],
-                "affected_places": check.affected_places,
-                "affected_tracks": check.affected_tracks,
-                "choices": ["blur", "remove"],
-            },
-        )
+        raise _refuse(check, "the selection intersects a privacy fence; fence_actions is required")
+
+    if isinstance(payload.fence_actions, dict):
+        chosen = {uuid.UUID(str(k)) for k in payload.fence_actions}
+        undecided = [h for h in check.fences if h.fence_id not in chosen]
+        if undecided:
+            raise _refuse(
+                check,
+                "fence_actions must cover every intersecting fence; "
+                f"{len(undecided)} left undecided",
+            )
+        return {uuid.UUID(str(k)): v for k, v in payload.fence_actions.items()}
     return payload.fence_actions
 
 
@@ -137,6 +159,11 @@ async def export_preview(
             height=PREVIEW_SIZE[1],
             theme=payload.theme,
             fence_action=action,
+            basemap=payload.basemap,
+            contents=payload.contents.model_dump(),
+            coarsen_to_city=payload.coarsen_to_city,
+            title=payload.title,
+            subtitle=payload.subtitle,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -190,6 +217,11 @@ async def create_export(
             height=payload.height,
             theme=payload.theme,
             fence_action=action,
+            basemap=payload.basemap,
+            contents=payload.contents.model_dump(),
+            coarsen_to_city=payload.coarsen_to_city,
+            title=payload.title,
+            subtitle=payload.subtitle,
         )
     except ValueError as exc:
         await session.execute(
@@ -212,7 +244,9 @@ async def create_export(
         "task_id": str(export_id),
         "status": "done",
         "download_url": f"/api/v1/exports/{export_id}/file",
-        "fence_action": action,
+        "fence_action": (
+            {str(k): v for k, v in action.items()} if isinstance(action, dict) else action
+        ),
     }
 
 

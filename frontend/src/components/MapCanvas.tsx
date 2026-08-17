@@ -1,6 +1,6 @@
 /**
  * Map canvas: Mapbox GL for the basemap and vector tiles, deck.gl on top for
- * photos and the heatmap.
+ * photo thumbnails.
  *
  * Tracks and places come from our own MVT endpoints, and every filterable
  * attribute (mode, source, commute flag, timestamps) travels as a FEATURE
@@ -8,30 +8,47 @@
  * GPU - dragging the timeline never issues a request. That is the whole reason
  * the tile layer emits attributes instead of pre-filtering in SQL.
  *
+ * The basemap follows the application theme. Switching it is a `setStyle` and a
+ * reinstall of our own layers, never a new map: the camera is where the user
+ * left it, and finding it again is not the price of turning the lights on.
+ *
  * No datum shift anywhere: stored data and the Mapbox basemap are both WGS-84.
  */
 
-import { HeatmapLayer } from '@deck.gl/aggregation-layers'
 import type { Layer } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { IconLayer } from '@deck.gl/layers'
 import mapboxgl from 'mapbox-gl'
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api } from '@/api/client'
 import { usePhotos } from '@/api/hooks'
 import type { Photo, SourceKind, TravelMode } from '@/api/types'
-import { t } from '@/i18n/zh'
-import { useAppStore } from '@/store/appStore'
+import { useAppStore, type Theme } from '@/store/appStore'
 
+// The design system's transport palette. `run` moved off the danger colour in
+// design v2: a running track and a selected place used to render identically.
 const MODE_COLOR: Record<TravelMode, string> = {
-  walk: '#33a76b',
-  run: '#f28c26',
-  bike: '#409acf',
-  car: '#e55a5a',
-  transit: '#8c66d9',
-  flight: '#59bfd9',
-  unknown: '#8c8f96',
+  walk: '#8fb8dd',
+  run: '#d9663c',
+  bike: '#8f6fd1',
+  car: '#4fa08f',
+  transit: '#d9a13c',
+  flight: '#c05f9c',
+  unknown: '#98989b',
+}
+
+const BASEMAP: Record<Theme, string> = {
+  light: 'mapbox://styles/mapbox/light-v11',
+  dark: 'mapbox://styles/mapbox/dark-v11',
+}
+
+// Read against the BASEMAP, not against the app chrome: a dark halo disappears
+// on a dark map and a white one disappears on a light one, and the halo is the
+// only thing keeping a coloured route legible over street detail.
+const PAINT: Record<Theme, { casing: string; casingOpacity: number; place: string; placeStroke: string }> = {
+  light: { casing: '#ffffff', casingOpacity: 0.9, place: '#16222e', placeStroke: '#ffffff' },
+  dark: { casing: '#0d0f13', casingOpacity: 0.55, place: '#f2f4f8', placeStroke: '#14161a' },
 }
 
 const TRACK_SOURCE = 'contrail-tracks'
@@ -85,6 +102,18 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
   const map = useRef<mapboxgl.Map | null>(null)
   const overlay = useRef<MapboxOverlay | null>(null)
   const ready = useRef(false)
+  const bound = useRef(false)
+  const applied = useRef<string | null>(null)
+
+  // A style swap wipes every source and layer we added. The epoch tells the
+  // effects below that what they configured is gone and has to be reapplied.
+  const [styleEpoch, setStyleEpoch] = useState(0)
+
+  const theme = useAppStore((state) => state.theme)
+  // The mount effect must not list `theme`: re-running it would rebuild the map
+  // and throw away the camera. It reads the current value through the ref.
+  const themeRef = useRef(theme)
+  themeRef.current = theme
 
   const layers = useAppStore((state) => state.layers)
   const modes = useAppStore((state) => state.modes)
@@ -96,25 +125,24 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
   // used directly as deck.gl icons.
   const photos = usePhotos(
     { from: timeFrom ?? undefined, to: timeTo ?? undefined, limit: 500 },
-    layers.photos || layers.heatmap,
+    layers.photos,
   )
 
-  useEffect(() => {
-    if (!container.current || map.current || !mapboxToken) return
-    mapboxgl.accessToken = mapboxToken
+  /**
+   * Put our sources and layers back on top of whatever style is loaded.
+   *
+   * Called on every `style.load`, which covers both the first load and every
+   * theme switch - `setStyle` keeps the camera and the controls but drops
+   * everything the application added.
+   */
+  const installLayers = useCallback(
+    (instance: mapboxgl.Map) => {
+      // Idempotent: a second `style.load` for a style that already carries our
+      // sources would throw on the duplicate id.
+      if (instance.getSource(TRACK_SOURCE)) return
 
-    const instance = new mapboxgl.Map({
-      container: container.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
-      center: [0, 20],
-      zoom: 1.4,
-      attributionControl: true,
-    })
-    instance.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
-    instance.addControl(new mapboxgl.ScaleControl({ unit: 'metric' }), 'bottom-left')
-    map.current = instance
+      const paint = PAINT[themeRef.current]
 
-    instance.on('load', () => {
       instance.addSource(TRACK_SOURCE, {
         type: 'vector',
         tiles: [api.tileUrl('tracks')],
@@ -128,8 +156,8 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
         maxzoom: 22,
       })
 
-      // White casing under the coloured line: without it a route is unreadable
-      // over a busy basemap.
+      // Casing under the coloured line: without it a route is unreadable over a
+      // busy basemap.
       instance.addLayer({
         id: TRACK_CASING,
         type: 'line',
@@ -137,8 +165,8 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
         'source-layer': 'tracks',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
-          'line-color': '#0d0f13',
-          'line-opacity': 0.55,
+          'line-color': paint.casing,
+          'line-opacity': paint.casingOpacity,
           'line-width': ['interpolate', ['linear'], ['zoom'], 4, 2.4, 12, 6, 18, 10],
         },
       })
@@ -172,7 +200,7 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
             14,
             ['*', 5.0, ['log10', ['max', 2, ['/', ['get', 'duration_s'], 60]]]],
           ],
-          'circle-color': '#f2f4f8',
+          'circle-color': paint.place,
           'circle-opacity': 0.85,
           'circle-stroke-width': 1.4,
           // A dwell partly deduced from a data gap is drawn differently, so it
@@ -181,40 +209,105 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
             'case',
             ['==', ['get', 'is_inferred_dwell'], true],
             '#e0a54a',
-            '#14161a',
+            paint.placeStroke,
           ],
         },
       })
 
-      for (const layerId of [TRACK_LAYER, PLACE_LAYER]) {
-        instance.on('click', layerId, (event) => {
-          const feature = event.features?.[0]
-          if (!feature) return
-          const id = String(feature.properties?.id ?? '')
-          if (id) onSelect(layerId === TRACK_LAYER ? 'track' : 'place', id)
-        })
-        instance.on('mouseenter', layerId, () => {
-          instance.getCanvas().style.cursor = 'pointer'
-        })
-        instance.on('mouseleave', layerId, () => {
-          instance.getCanvas().style.cursor = ''
-        })
+      // Delegated listeners live on the map, not on the style, so they survive a
+      // style swap and are bound exactly once.
+      if (!bound.current) {
+        bound.current = true
+        for (const layerId of [TRACK_LAYER, PLACE_LAYER]) {
+          instance.on('click', layerId, (event) => {
+            const feature = event.features?.[0]
+            if (!feature) return
+            const id = String(feature.properties?.id ?? '')
+            if (id) onSelect(layerId === TRACK_LAYER ? 'track' : 'place', id)
+          })
+          instance.on('mouseenter', layerId, () => {
+            instance.getCanvas().style.cursor = 'pointer'
+          })
+          instance.on('mouseleave', layerId, () => {
+            instance.getCanvas().style.cursor = ''
+          })
+        }
       }
 
-      overlay.current = new MapboxOverlay({ interleaved: true, layers: [] })
-      instance.addControl(overlay.current)
+      // The interleaved overlay is a custom layer inside the style, so it goes
+      // with it. The theme effect removed the old one before swapping.
+      if (!overlay.current) {
+        overlay.current = new MapboxOverlay({ interleaved: true, layers: [] })
+        instance.addControl(overlay.current)
+      }
+
       ready.current = true
+      setStyleEpoch((epoch) => epoch + 1)
+    },
+    [onSelect],
+  )
+
+  useEffect(() => {
+    if (!container.current || map.current || !mapboxToken) return
+    mapboxgl.accessToken = mapboxToken
+
+    applied.current = BASEMAP[themeRef.current]
+    const instance = new mapboxgl.Map({
+      container: container.current,
+      style: applied.current,
+      center: [0, 20],
+      zoom: 1.4,
+      attributionControl: true,
     })
+    instance.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
+    instance.addControl(new mapboxgl.ScaleControl({ unit: 'metric' }), 'bottom-left')
+    map.current = instance
+
+    // Not 'load': that one fires once. 'style.load' fires again after every
+    // setStyle, which is exactly when the layers need reinstalling.
+    instance.on('style.load', () => installLayers(instance))
 
     return () => {
       ready.current = false
+      bound.current = false
+      applied.current = null
       overlay.current = null
       instance.remove()
       map.current = null
     }
-  }, [mapboxToken, onSelect])
+  }, [installLayers, mapboxToken])
+
+  // Theme switch: swap the basemap in place. Rebuilding the map would be
+  // simpler and would throw away the camera, which the user would have to
+  // find again every time they change the theme.
+  //
+  // Guarded on the style actually applied rather than on `ready`, so a switch
+  // made while the first style is still loading is not silently dropped.
+  useEffect(() => {
+    const instance = map.current
+    if (!instance || applied.current === BASEMAP[theme]) return
+    applied.current = BASEMAP[theme]
+    ready.current = false
+    if (overlay.current) {
+      instance.removeControl(overlay.current)
+      overlay.current = null
+    }
+    // `diff: false` is not a performance choice, it is the contract. Mapbox
+    // diffs two styles when it can, and a diffed swap deletes the sources and
+    // layers we added WITHOUT firing `style.load` - so nothing would put them
+    // back and the map would come up with a new basemap and no data on it. The
+    // two font fields are here only because the option type demands them; both
+    // are already undefined on the map.
+    instance.setStyle(BASEMAP[theme], {
+      diff: false,
+      localFontFamily: undefined,
+      localIdeographFontFamily: undefined,
+    })
+  }, [theme])
 
   // Filters and visibility are style updates - no refetch, no tile reload.
+  // `styleEpoch` is in the dependencies because a reinstalled layer starts
+  // unfiltered and visible.
   useEffect(() => {
     const instance = map.current
     if (!instance || !ready.current) return
@@ -232,7 +325,7 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
       instance.setFilter(PLACE_LAYER, placeFilter)
       instance.setLayoutProperty(PLACE_LAYER, 'visibility', layers.places ? 'visible' : 'none')
     }
-  }, [layers, modes, sources, timeFrom, timeTo])
+  }, [layers, modes, sources, styleEpoch, timeFrom, timeTo])
 
   const located = useMemo(
     () => (photos.data ?? []).filter((p): p is Photo & { lat: number; lon: number } =>
@@ -269,33 +362,14 @@ export default function MapCanvas({ mapboxToken, onSelect }: Props) {
       )
     }
 
-    if (layers.heatmap && located.length) {
-      deckLayers.push(
-        new HeatmapLayer<Photo & { lat: number; lon: number }>({
-          id: 'contrail-heatmap',
-          data: located,
-          getPosition: (photo) => [photo.lon, photo.lat],
-          getWeight: () => 1,
-          radiusPixels: 42,
-          intensity: 1,
-          threshold: 0.05,
-        }),
-      )
-    }
-
+    // No heatmap layer: F-31 stays in P2 and the MVP does not render a control
+    // for it, so there is nothing here to switch on.
     overlay.current.setProps({ layers: deckLayers })
-  }, [layers.photos, layers.heatmap, located, onSelect])
+  }, [layers.photos, located, onSelect, styleEpoch])
 
-  if (!mapboxToken) {
-    return (
-      <div className="map-empty">
-        <div>
-          <p>{t.connection.mapboxMissing}</p>
-          <p className="faint">VITE_MAPBOX_TOKEN</p>
-        </div>
-      </div>
-    )
-  }
+  // Without a token there is no basemap, but the user's own geometry is still
+  // real - the canvas keeps its place and the overlay explains the gap.
+  if (!mapboxToken) return <div className="map-canvas" ref={container} />
 
-  return <div className="map-canvas" ref={container} />
+  return <div className="map-canvas" ref={container} style={{ height: '100%' }} />
 }

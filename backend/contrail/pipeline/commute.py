@@ -114,6 +114,7 @@ def detect_commute_ods(
     legs: list[CommuteLeg],
     home_work_anchors: set[str] | None = None,
     workday_count: int | None = None,
+    min_occurrence: int = MIN_OCCURRENCE,
 ) -> list[ODResult]:
     """Find directed anchor pairs that behave like a commute.
 
@@ -134,7 +135,7 @@ def detect_commute_ods(
 
     results: list[ODResult] = []
     for (origin, destination), pair_legs in grouped.items():
-        if len(pair_legs) < MIN_OCCURRENCE:
+        if len(pair_legs) < min_occurrence:
             continue
 
         locals_ = [to_local(leg.depart_utc, leg.tz_name) for leg in pair_legs]
@@ -177,9 +178,17 @@ def detect_commute_ods(
                         sorted(distances)[len(distances) // 2] if distances else None
                     ),
                     "distance_unknown_count": len(pair_legs) - len(distances),
+                    # Sum of the KNOWN distances only. A leg with no distance
+                    # contributes nothing here and is counted above instead -
+                    # folding it in as zero would understate the total silently.
+                    "total_distance_m": sum(distances) if distances else None,
                     "median_duration_s": (
                         sorted(leg.duration_s for leg in pair_legs)[len(pair_legs) // 2]
                     ),
+                    # The span this pair covers, in local dates: the card reads
+                    # "2024-03 ~ 2026-05" and nothing else can produce it.
+                    "first_seen": min(locals_).date().isoformat(),
+                    "last_seen": max(locals_).date().isoformat(),
                     "anchor_is_home_or_work": anchors_are_home_work,
                 },
             )

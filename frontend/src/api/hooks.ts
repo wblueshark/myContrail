@@ -12,7 +12,9 @@ export const keys = {
   places: (params?: Record<string, unknown>) => ['places', params ?? {}] as const,
   tracks: (params?: Record<string, unknown>) => ['tracks', params ?? {}] as const,
   photos: (params?: Record<string, unknown>) => ['photos', params ?? {}] as const,
-  anchors: ['anchors'] as const,
+  anchors: (params?: Record<string, unknown>) => ['anchors', params ?? {}] as const,
+  overviewCountries: ['overview', 'countries'] as const,
+  overviewCities: (country?: string | null) => ['overview', 'cities', country ?? 'all'] as const,
   groups: ['groups'] as const,
   tags: ['tags'] as const,
   sources: ['sources'] as const,
@@ -44,7 +46,18 @@ export const useTracks = (params?: Record<string, unknown>) =>
 export const usePhotos = (params?: Record<string, unknown>, enabled = true) =>
   useQuery({ queryKey: keys.photos(params), queryFn: () => api.photos(params), enabled })
 
-export const useAnchors = () => useQuery({ queryKey: keys.anchors, queryFn: () => api.anchors() })
+export const useAnchors = (params?: Parameters<typeof api.anchors>[0]) =>
+  useQuery({ queryKey: keys.anchors(params), queryFn: () => api.anchors(params) })
+
+/** Overview aggregates. Full-corpus figures: deliberately no time window. */
+export const useOverviewCountries = () =>
+  useQuery({ queryKey: keys.overviewCountries, queryFn: api.overviewCountries })
+
+export const useOverviewCities = (country?: string | null) =>
+  useQuery({
+    queryKey: keys.overviewCities(country),
+    queryFn: () => api.overviewCities(country ? { country } : undefined),
+  })
 export const useGroups = () => useQuery({ queryKey: keys.groups, queryFn: api.groups })
 export const useTags = () => useQuery({ queryKey: keys.tags, queryFn: api.tags })
 export const useSources = () => useQuery({ queryKey: keys.sources, queryFn: api.listSources })
@@ -96,6 +109,24 @@ export function useCreateGroup() {
   return useMutation({
     mutationFn: api.createGroup,
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.groups }),
+  })
+}
+
+export function useUpdateGroup() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name: string; color?: string | null }) =>
+      api.updateGroup(id, body),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.groups }),
+  })
+}
+
+export function useUpdateTag() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name: string; color?: string | null }) =>
+      api.updateTag(id, body),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.tags }),
   })
 }
 
@@ -197,6 +228,47 @@ export function useRecomputeCommute() {
   return useMutation({
     mutationFn: api.recomputeCommute,
     onSuccess: () => invalidateDerived(client),
+  })
+}
+
+export function useBulkAssign() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      trip_ids?: string[]
+      place_ids?: string[]
+      group_id?: string | null
+      add_tags?: string[]
+      remove_tags?: string[]
+    }) => {
+      const { place_ids, trip_ids, ...rest } = body
+      return place_ids?.length
+        ? api.bulkAssignPlaces({ place_ids, ...rest })
+        : api.bulkAssignTrips({ trip_ids: trip_ids ?? [], ...rest })
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: keys.groups })
+      void client.invalidateQueries({ queryKey: keys.tags })
+      invalidateDerived(client)
+    },
+  })
+}
+
+export function useCreateImport() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: api.createImport,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.imports }),
+  })
+}
+
+export function useImports(enabled = true) {
+  return useQuery({
+    queryKey: keys.imports,
+    queryFn: api.listImports,
+    enabled,
+    // A running import is the one thing here that changes without the user.
+    refetchInterval: enabled ? 1200 : false,
   })
 }
 
